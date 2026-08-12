@@ -1,0 +1,76 @@
+name: Release → NPM + Discord
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Typecheck · Build · Test · Publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      - name: Publish to NPM
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Notify Discord
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          RELEASE_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${VERSION}"
+          ACTOR="${GITHUB_ACTOR}"
+          NPM_URL="https://www.npmjs.com/package/@vinkius/connect/v/${VERSION#v}"
+
+          # Extract release body (first 1500 chars)
+          BODY=$(cat <<'RELEASE_EOF'
+          ${{ github.event.release.body }}
+          RELEASE_EOF
+          )
+          BODY=$(echo "$BODY" | head -c 1500)
+          ESCAPED=$(echo "$BODY" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))" | sed 's/^"//;s/"$//')
+
+          PAYLOAD=$(cat <<EOF
+          {
+            "embeds": [{
+              "title": "🚀 @vinkius/connect ${VERSION} published",
+              "url": "$RELEASE_URL",
+              "color": 3066993,
+              "description": "${ESCAPED}",
+              "fields": [
+                { "name": "NPM", "value": "[npmjs.com](${NPM_URL})", "inline": true },
+                { "name": "GitHub", "value": "[Release](${RELEASE_URL})", "inline": true },
+                { "name": "Author", "value": "$ACTOR", "inline": true }
+              ],
+              "footer": { "text": "@vinkius/connect" },
+              "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            }]
+          }
+          EOF
+          )
+
+          curl -s -H "Content-Type: application/json" -d "$PAYLOAD" "$DISCORD_WEBHOOK_URL"
