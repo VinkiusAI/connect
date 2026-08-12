@@ -2,31 +2,55 @@
 
 # @vinkius/connect
 
-### Ship AI features, not integration projects.
+### Give your AI application real-world capabilities.
 
-[![npm version](https://img.shields.io/npm/v/@vinkius/connect.svg?color=cb3837&logo=npm)](https://www.npmjs.com/package/@vinkius/connect)
-[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-3f7de6.svg)](./LICENSE)
-[![Types: included](https://img.shields.io/badge/types-included-3f7de6.svg)](#)
-[![Zero dependencies](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](#)
-[![Runtimes: Node · Bun · Deno · Edge](https://img.shields.io/badge/runtimes-Node%20%C2%B7%20Bun%20%C2%B7%20Deno%20%C2%B7%20Edge-3f7de6.svg)](#)
+[![npm](https://img.shields.io/npm/v/@vinkius/connect.svg?color=cb3837&logo=npm)](https://www.npmjs.com/package/@vinkius/connect)
+[![Connectors](https://api.vinkius.com/badges/connectors.svg)](https://vinkius.com)
+[![AI Capabilities](https://api.vinkius.com/badges/capabilities.svg)](https://vinkius.com)
 
 </div>
 
-**Vinkius Connect** gives your AI agents real capabilities — the ability to talk to
-customers, process payments, open pull requests, search knowledge bases, and
-thousands more — through the connectors each user has connected to your app.
+**Vinkius Connect** gives the AI application you're building access to thousands of
+tools, services, and systems — so your AI can take action for each user.
 
-One call returns the capabilities available to a given user, as executable,
-framework-neutral objects your agent can call directly. No OAuth plumbing, no
-per-connector glue, no secrets to manage per user. Vinkius resolves authentication,
-permissions, protocol and execution for every capability call.
+Your application identifies the user. Vinkius handles the connectivity,
+authentication, permissions, protocols, and execution behind the capabilities
+that user has connected.
 
 ```
-vinkius
-  → user(externalId)          // your id — nothing to resolve or store
-      → connector(slug)        // github, slack, notion, …
-          → capabilities()     // the AI capabilities for this user
-             / execute()
+Your AI Application
+        │
+        ▼
+      User
+        │
+        ▼
+   Connectors
+        │
+        ▼
+   Capabilities
+        │
+        ▼
+      Action
+```
+
+### Connectors provide access. Capabilities provide action.
+
+A connector connects your user to an external system. A capability is what your AI
+can actually do with it.
+
+```
+GitHub connector
+       │
+       ├── list repositories
+       ├── create issue
+       ├── create pull request
+       ├── review code
+       └── search code
+```
+
+```ts
+const capabilities = await vinkius.user('alice_123').capabilities();
+// → the capabilities available to this user
 ```
 
 Built on the [Vinkius AI Connectivity Cloud](https://vinkius.com) — one managed
@@ -66,9 +90,9 @@ LangChain, LlamaIndex, Cloudflare Workers AI, and any OpenAI-compatible runtime.
 
 Vinkius Connect authenticates with two values from a Vinkius Cloud **Application**:
 
-| Value | Prefix | What it is |
-| --- | --- | --- |
-| `appId` | `vk_app_…` | The Application's public id — identifies your tenant |
+| Value    | Prefix        | What it is                                                                 |
+| -------- | ------------- | -------------------------------------------------------------------------- |
+| `appId`  | `vk_app_…`    | The Application's public id — identifies your tenant                       |
 | `apiKey` | `vk_app_sk_…` | An **Application Key** — the secret your backend uses to act for its users |
 
 To create them in the [Vinkius Cloud](https://cloud.vinkius.com) dashboard:
@@ -79,8 +103,8 @@ To create them in the [Vinkius Cloud](https://cloud.vinkius.com) dashboard:
    in the page URL — copy it into `appId`.
 3. Go to the **App Keys** tab → **New Key**. Select the permissions your backend
    needs, then **Create Key**.
-4. The **Application Key** (`vk_app_sk_…`) is shown **once**, in a *"Copy this key
-   now"* dialog. Copy it into `apiKey` — it cannot be retrieved afterward.
+4. The **Application Key** (`vk_app_sk_…`) is shown **once**, in a _"Copy this key
+   now"_ dialog. Copy it into `apiKey` — it cannot be retrieved afterward.
 
 You can **rotate** or **revoke** a key anytime from the same **App Keys** tab.
 Rotating invalidates the old key immediately and reveals the new one once.
@@ -217,17 +241,17 @@ Adapters are zero-dependency subpath exports that convert capabilities into your
 framework's **tool** format (each framework's own term). Where a framework needs one
 of its own factories, you inject it — no peer dependency, no version coupling.
 
-| Framework | Import | Notes |
-| --- | --- | --- |
-| OpenAI (chat completions) | `@vinkius/connect/openai` | `toOpenAITools`, `runOpenAIToolCall` |
-| OpenAI Agents (`@openai/agents`) | `@vinkius/connect/openai-agents` | `toOpenAIAgentsTools` (inject `tool`) |
-| Anthropic (Messages) | `@vinkius/connect/anthropic` | `toAnthropicTools` |
-| Google Gemini | `@vinkius/connect/gemini` | `toGeminiTools`, `runGeminiFunctionCall` |
-| Vercel AI SDK | `@vinkius/connect/ai-sdk` | `toAISDKTools` (inject `jsonSchema`) |
-| LangChain.js | `@vinkius/connect/langchain` | `toLangChainTools` (inject `tool`) |
-| LlamaIndex.TS | `@vinkius/connect/llamaindex` | `toLlamaIndexTools` (inject `tool`) |
-| Cloudflare Workers AI | `@vinkius/connect/workers-ai` | `toWorkersAITools` (for `runWithTools`) |
-| Any / neutral | `@vinkius/connect/json-schema` | `toJSONSchemaTools`, `executeByName` |
+| Framework                        | Import                           | Notes                                    |
+| -------------------------------- | -------------------------------- | ---------------------------------------- |
+| OpenAI (chat completions)        | `@vinkius/connect/openai`        | `toOpenAITools`, `runOpenAIToolCall`     |
+| OpenAI Agents (`@openai/agents`) | `@vinkius/connect/openai-agents` | `toOpenAIAgentsTools` (inject `tool`)    |
+| Anthropic (Messages)             | `@vinkius/connect/anthropic`     | `toAnthropicTools`                       |
+| Google Gemini                    | `@vinkius/connect/gemini`        | `toGeminiTools`, `runGeminiFunctionCall` |
+| Vercel AI SDK                    | `@vinkius/connect/ai-sdk`        | `toAISDKTools` (inject `jsonSchema`)     |
+| LangChain.js                     | `@vinkius/connect/langchain`     | `toLangChainTools` (inject `tool`)       |
+| LlamaIndex.TS                    | `@vinkius/connect/llamaindex`    | `toLlamaIndexTools` (inject `tool`)      |
+| Cloudflare Workers AI            | `@vinkius/connect/workers-ai`    | `toWorkersAITools` (for `runWithTools`)  |
+| Any / neutral                    | `@vinkius/connect/json-schema`   | `toJSONSchemaTools`, `executeByName`     |
 
 ### OpenAI (chat completions)
 
@@ -355,9 +379,7 @@ own subpath:
 Every fluent call has a REST equivalent for full control:
 
 ```ts
-const connection = await vinkius.users
-  .connections('alice_123')
-  .create({ connector: 'github' });
+const connection = await vinkius.users.connections('alice_123').create({ connector: 'github' });
 
 await vinkius.users
   .connections('alice_123')
