@@ -19,6 +19,9 @@ jobs:
   deploy:
     name: Build & Deploy to S3 + CloudFront
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
 
     steps:
       - uses: actions/checkout@v4
@@ -42,6 +45,7 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_DOCS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_DOCS_REGION }}
+          audience: sts.amazonaws.com
 
       - name: Sync to S3
         run: |
