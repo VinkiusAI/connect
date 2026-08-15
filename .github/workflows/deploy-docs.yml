@@ -40,6 +40,17 @@ jobs:
         run: npm run build
         working-directory: docs
 
+      # A CloudFront Function da distribuição reescreve requests de HTML para o
+      # arquivo pré-comprimido .br quando o cliente aceita brotli. Sem esses
+      # arquivos, todo request de HTML dá 404 e cai no fallback /index.html
+      # (SPA custom_error_response) — fazendo TODAS as páginas mostrarem a home.
+      # Portanto geramos os .br aqui, ao lado dos .html originais.
+      - name: Pre-compress HTML with Brotli
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq brotli
+          find docs/dist -type f -name '*.html' -exec brotli -kf {} \;
+          echo "Generated $(find docs/dist -type f -name '*.html.br' | wc -l) brotli files"
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
@@ -49,18 +60,22 @@ jobs:
 
       - name: Sync to S3
         run: |
-          # Assets estáticos — cache longo (imutáveis via content hash)
+          # Assets estáticos — cache longo (imutáveis via content hash).
+          # Exclui HTML (e seus .br), xml e txt, que precisam revalidar.
           aws s3 sync docs/dist/ "s3://${{ secrets.AWS_DOCS_BUCKET }}" \
             --delete \
             --cache-control "public, max-age=31536000, immutable" \
             --exclude "*.html" \
+            --exclude "*.html.br" \
             --exclude "*.xml" \
             --exclude "*.txt"
 
-          # HTML/XML/TXT — sem cache (sempre revalidar)
+          # HTML + HTML pré-comprimido (.br) + xml + txt — sempre revalidar.
+          # CloudFront é invalidado a cada deploy, então o conteúdo fica sempre fresco.
           aws s3 sync docs/dist/ "s3://${{ secrets.AWS_DOCS_BUCKET }}" \
             --exclude "*" \
             --include "*.html" \
+            --include "*.html.br" \
             --include "*.xml" \
             --include "*.txt" \
             --cache-control "public, max-age=0, must-revalidate"
