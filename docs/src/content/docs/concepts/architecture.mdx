@@ -1,0 +1,112 @@
+---
+title: Trace a capability from handle to HTTP request
+description: See how the fluent API delegates to resource clients, routes HTTP requests, memoizes connection IDs, and returns execution results.
+---
+
+The SDK has three layers: fluent user and connector handles, low-level resource clients, and one HTTP transport. Following those layers explains when a line of code performs I/O, what is cached, and which failures can be retried.
+
+## Fluent handles describe scope
+
+```typescript
+const user = vinkius.user('alice_123');
+const github = user.connector('github');
+```
+
+These lines create `UserContext` and `Connector` objects without contacting the API. The handles retain the application context, `externalId`, and connector slug so later calls can build a user-scoped route.
+
+The constructor is also zero-request. Network I/O begins with methods such as `ensure()`, `connect()`, `status()`, `schema()`, `capabilities()`, and `execute()`.
+
+## Fluent methods delegate to resources
+
+| Fluent operation | Resource client | HTTP operation |
+| --- | --- | --- |
+| `user.ensure(metadata)` | `AppUsersClient.create` | `POST /apps/{appId}/users` |
+| `user.connectors()` | `ConnectionsClient.list` | `GET /apps/{appId}/users/{externalId}/mcps` |
+| `connector.connect()` | `ConnectionsClient.create` | `POST .../mcps` |
+| `credentials.schema()` | `CatalogClient.get` | `GET /catalog/mcps/{slug}` |
+| `credentials.status()` | `CredentialsClient.status` | `GET .../mcps/{connectionId}/credentials` |
+| `credentials.set(values)` | `CredentialsClient.set` | `PUT .../mcps/{connectionId}/credentials` |
+| `user.capabilities()` | `AppUsersClient.capabilities` | `GET .../users/{externalId}/tools` |
+| `connector.capabilities()` | `ExecutionClient.list` | `GET .../mcps/{connectionId}/tools` |
+| `capability.execute()` | `ExecutionClient.execute` | `POST .../tools/execute` |
+
+Path components are encoded before requests are sent. The low-level clients are exported for applications that need raw resource shapes; the fluent API adds lazy resolution, status derivation, capability construction, and the flat credential map.
+
+## Capability construction keeps execution routing
+
+The aggregated endpoint returns capability data plus connector and connection identifiers. The SDK converts each item into a `Capability` and applies the configured display-name function:
+
+```typescript
+const capability = capabilities.findCapability('github__create_issue');
+
+console.log(capability?.rawName);      // create_issue
+console.log(capability?.connector);    // github
+console.log(capability?.connectionId); // route for this user's connection
+```
+
+`execute()` sends `rawName`, arguments, and the retained connection ID. Because a capability is tied to the user scope that produced it, do not cache one user's capability objects for another user's request.
+
+## Connection ID memoization is local to a handle
+
+A `Connector` resolves its connection ID when an operation needs it and stores the result on that instance. Reusing the same handle can avoid another connection-list request:
+
+```typescript
+const github = vinkius.user('alice_123').connector('github');
+
+await github.connect();              // response ID is memoized
+await github.credentials.status();   // uses the memoized ID
+await github.capabilities();         // uses the memoized ID
+```
+
+A newly created handle has its own memo, and there is no application-wide connection cache. If a connection is removed outside the handle, a memoized ID can become stale. `disconnect()` clears the memo after a successful delete.
+
+`ResolverCache` is a separate utility. `Vinkius` does not use it automatically for users, schemas, catalog entries, or connection IDs.
+
+## The transport adds application authentication
+
+Every HTTP request carries the Application Key as bearer authorization and the App ID in the SDK's application header. These are application-level credentials; user scope comes from the encoded `externalId` in the resource path.
+
+The transport also applies:
+
+- a timeout per attempt, defaulting to 30 seconds;
+- an optional caller `AbortSignal` combined with that timeout;
+- JSON serialization and parsing;
+- request ID extraction from supported response headers;
+- response-to-error mapping;
+- retry policy for repeatable operations.
+
+## Retry depends on method and idempotency
+
+The default maximum is the initial attempt plus two retries. Network errors, timeouts, and HTTP `429`, `502`, `503`, or `504` qualify as transient, but only repeatable requests are retried.
+
+`GET`, `PUT`, and `DELETE` are repeatable by default. User creation and connection creation are explicitly marked idempotent because their server contracts are upsert/get-or-create. Capability execution is repeatable only when `idempotencyKey` is supplied.
+
+The transport checks whether the execution key is `undefined`, while the header is only sent for a truthy string. Therefore, an empty string can enable retry without sending the header. Always validate that your key is non-empty and stable before calling `execute()`.
+
+Adapter dispatch helpers call `capability.execute(args)` without `ExecuteOptions`; those executions do not carry a key or caller signal and receive one transport attempt.
+
+## Hooks receive a bounded, redacted view
+
+`onRequest` receives method, URL, and headers for every attempt. It does not receive the request body. Exact sensitive header names—authorization, idempotency key, and cookie headers—are redacted.
+
+`onResponse` receives status, URL, optional request ID, and a cloned response body. Redaction uses a fixed list of exact, case-insensitive field names such as `token`, `api_key`, `credentials`, `password`, and `client_secret`, to a maximum depth of six. It does not infer every secret-like custom name, and URLs are not redacted.
+
+Hook callbacks are synchronous and are not awaited. If a hook throws, its original error propagates rather than being converted to `VinkiusError`.
+
+## Result failures and request failures differ
+
+```typescript
+const result = await capability.execute(args, { idempotencyKey });
+
+if (result.isError) {
+  // The request completed; the capability reported failure.
+}
+```
+
+HTTP, configuration, and most transport failures throw a `VinkiusError` subclass. When the server provides a request identifier, the error includes `requestId`. Unknown names in adapter dispatchers throw plain `Error`, not `VinkiusError`.
+
+## Next steps
+
+- [Inspect capability lookup and filtering](/concepts/capabilities)
+- [Implement both error paths](/guides/error-handling)
+- [Use the low-level API reference](/reference/client#low-level-clients)

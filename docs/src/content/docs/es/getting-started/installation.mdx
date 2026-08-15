@@ -1,0 +1,110 @@
+---
+title: Instale e inicialice el SDK
+description: Añada @vinkius/connect a un entorno de ejecución de servidor, configure las credenciales de la aplicación y verifique la conexión con la API.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Instale el paquete en su backend y cree una única instancia reutilizable de `Vinkius`. El cliente almacena la configuración de la aplicación, no el estado de cada usuario, por lo que una misma instancia puede atender solicitudes de muchos usuarios.
+
+## Requisitos previos
+
+- Node.js 18 o posterior, u otro entorno de ejecución de servidor que proporcione `fetch`
+- Un App ID de Vinkius que comience por `vk_app_`
+- Una Application Key de Vinkius que comience por `vk_app_sk_`
+
+## Instale el paquete
+
+```bash
+npm install @vinkius/connect
+```
+
+Los comandos equivalentes son `pnpm add @vinkius/connect`, `yarn add @vinkius/connect` y `bun add @vinkius/connect`.
+
+## Configure las variables de entorno del servidor
+
+```bash
+VINKIUS_APP_ID=vk_app_xxxxxxxxxxxxxxxx
+VINKIUS_APP_KEY=vk_app_sk_xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+<Aside type="caution">
+  `VINKIUS_APP_KEY` autoriza solicitudes a la API. Consérvela en el entorno del servidor o en un almacén de secretos. No la use en código para navegadores, binarios móviles, registros públicos ni en el contexto de un modelo.
+</Aside>
+
+## Cree un módulo exclusivo del servidor
+
+```typescript
+// lib/vinkius.ts — import this module only from server code
+import { Vinkius } from '@vinkius/connect';
+
+function required(name: 'VINKIUS_APP_ID' | 'VINKIUS_APP_KEY'): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`Missing ${name}`);
+  return value;
+}
+
+export const vinkius = new Vinkius({
+  appId: required('VINKIUS_APP_ID'),
+  apiKey: required('VINKIUS_APP_KEY'),
+});
+```
+
+El constructor comprueba los prefijos del App ID y de la clave, analiza `baseUrl` cuando se proporciona y requiere una implementación de `fetch`. No realiza ninguna solicitud. No valida en tiempo de ejecución el rango de cada número o función de retorno opcionales, por lo que debe mantener `timeoutMs`, `maxRetries`, los hooks y las funciones de nomenclatura personalizadas bajo el control de la aplicación.
+
+Si su entorno de ejecución no tiene un `fetch` global, proporcione una implementación compatible:
+
+```typescript
+const vinkius = new Vinkius({
+  appId,
+  apiKey,
+  fetch: customFetch,
+});
+```
+
+## Verifique las credenciales con una solicitud
+
+Una comprobación que solo cree un identificador no contacta con la API. Use una lectura del catálogo para realizar una prueba de humo real:
+
+```typescript
+import { VinkiusError } from '@vinkius/connect';
+import { vinkius } from './lib/vinkius';
+
+async function checkVinkiusConnection(): Promise<void> {
+  try {
+    const page = await vinkius.catalog.list({ page: 1 });
+    console.log(`Vinkius API reachable; received ${page.data.length} connectors`);
+  } catch (error: unknown) {
+    if (error instanceof VinkiusError) {
+      console.error({
+        code: error.code,
+        status: error.status,
+        requestId: error.requestId,
+      });
+    }
+    throw error;
+  }
+}
+
+await checkVinkiusConnection();
+```
+
+Esta comprobación verifica que el entorno de ejecución pueda acceder a la API y que se acepten las credenciales de la aplicación. Un `ConfigError` local ocurre antes de cualquier solicitud; `AuthError` representa una respuesta HTTP `401` o `403`.
+
+## Cree un identificador de usuario
+
+```typescript
+const user = vinkius.user('alice_123');
+```
+
+`user()` no realiza ninguna solicitud. El ID debe ser el identificador estable del usuario en su aplicación: entre 1 y 255 caracteres, sin comenzar por `vk_app_user_` y sin espacios en blanco, `/` ni `\`.
+
+<Aside type="note">
+  `user.ensure(metadata)` es opcional. Llámelo cuando necesite una creación o actualización explícita mediante la API, o cuando quiera adjuntar metadatos no secretos; no lo llame solo para obtener un identificador.
+</Aside>
+
+## Próximos pasos
+
+- [Ejecute el inicio rápido desde la conexión hasta la ejecución](/es/)
+- [Vincule `externalId` con una sesión autenticada](/es/guides/multi-tenant)
+- [Revise todas las opciones del constructor](/es/reference/client#cree-un-cliente)

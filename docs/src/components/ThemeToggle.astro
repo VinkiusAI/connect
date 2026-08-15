@@ -1,0 +1,108 @@
+---
+const { lang } = Astro.locals.starlightRoute;
+const labels = {
+  en: { light: 'Switch to light theme', dark: 'Switch to dark theme' },
+  'pt-BR': { light: 'Mudar para o tema claro', dark: 'Mudar para o tema escuro' },
+  es: { light: 'Cambiar al tema claro', dark: 'Cambiar al tema oscuro' },
+  fr: { light: 'Passer au thème clair', dark: 'Passer au thème sombre' },
+} as const;
+const label = labels[lang as keyof typeof labels] ?? labels.en;
+---
+
+<vk-theme-toggle data-light-label={label.light} data-dark-label={label.dark}>
+  <button class="vk-theme__button" type="button" aria-label={label.light} title={label.light}>
+    <svg data-theme-icon="light" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="12" cy="12" r="3.5" stroke="currentColor" stroke-width="1.7"></circle>
+      <path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.66 6.34l1.41-1.41" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"></path>
+    </svg>
+    <svg data-theme-icon="dark" viewBox="0 0 24 24" fill="none" aria-hidden="true" style="display: none;">
+      <path d="M20.2 15.31A8.5 8.5 0 0 1 8.69 3.8 8.5 8.5 0 1 0 20.2 15.31Z" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"></path>
+    </svg>
+  </button>
+</vk-theme-toggle>
+
+<script>
+  type Theme = 'dark' | 'light';
+
+  class VinkiusThemeToggle extends HTMLElement {
+    private button: HTMLButtonElement | null;
+
+    constructor() {
+      super();
+      this.button = this.querySelector('button');
+      this.button?.addEventListener('click', () => {
+        const currentTheme = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+        VinkiusThemeToggle.applyTheme(currentTheme === 'dark' ? 'light' : 'dark');
+      });
+      this.sync();
+    }
+
+    static applyTheme(theme: Theme): void {
+      document.documentElement.dataset.theme = theme;
+      try {
+        localStorage.setItem('starlight-theme', theme);
+      } catch {}
+      document.querySelectorAll<VinkiusThemeToggle>('vk-theme-toggle').forEach((toggle) => toggle.sync());
+    }
+
+    sync(): void {
+      if (!this.button) return;
+      const currentTheme: Theme = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+      const nextTheme: Theme = currentTheme === 'dark' ? 'light' : 'dark';
+      const nextLabel = nextTheme === 'light' ? this.dataset.lightLabel : this.dataset.darkLabel;
+      this.button.setAttribute('aria-label', nextLabel ?? 'Toggle theme');
+      this.button.title = nextLabel ?? 'Toggle theme';
+      this.querySelectorAll<SVGElement>('[data-theme-icon]').forEach((icon) => {
+        icon.style.display = icon.dataset.themeIcon === nextTheme ? '' : 'none';
+      });
+    }
+  }
+
+  if (!customElements.get('vk-theme-toggle')) {
+    customElements.define('vk-theme-toggle', VinkiusThemeToggle);
+  }
+
+  window.addEventListener('pageshow', () => {
+    document.querySelectorAll<VinkiusThemeToggle>('vk-theme-toggle').forEach((toggle) => toggle.sync());
+  });
+</script>
+
+<style>
+  @layer starlight.core {
+    vk-theme-toggle {
+      display: inline-flex;
+      flex: 0 0 auto;
+    }
+
+    .vk-theme__button {
+      width: var(--vk-header-control-height);
+      height: var(--vk-header-control-height);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 0;
+      border-radius: 0;
+      padding: 0;
+      color: rgba(255, 255, 255, 0.66);
+      background: transparent;
+      cursor: pointer;
+      transition: color 140ms ease, background-color 140ms ease;
+    }
+
+    .vk-theme__button:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.045);
+    }
+
+    .vk-theme__button svg {
+      width: 0.95rem;
+      height: 0.95rem;
+    }
+
+    @media (max-width: 49.999rem) {
+      .vk-theme__button {
+        border: 1px solid rgba(255, 255, 255, 0.1);
+      }
+    }
+  }
+</style>

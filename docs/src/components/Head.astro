@@ -1,0 +1,57 @@
+---
+import DefaultHead from '@astrojs/starlight/components/Head.astro';
+import {
+  SOCIAL_IMAGE_URL,
+  buildSeoTitle,
+  buildStructuredData,
+  serializeJsonLd,
+} from '../lib/seo';
+
+const route = Astro.locals.starlightRoute;
+const pageTitle = route.entry.data.title;
+const description = route.entry.data.description ?? 'Official documentation for the Vinkius Connect TypeScript SDK and its user-scoped AI capabilities.';
+const canonicalEntry = route.head.find(
+  (entry) => entry.tag === 'link' && entry.attrs?.rel === 'canonical',
+);
+const canonical =
+  typeof canonicalEntry?.attrs?.href === 'string'
+    ? canonicalEntry.attrs.href
+    : Astro.url.href;
+const seoTitle = buildSeoTitle(pageTitle, Astro.url.pathname, route.lang);
+const isNotFound = route.id === '404';
+
+route.head = route.head.map((entry) => {
+  if (entry.tag === 'title') return { ...entry, content: seoTitle };
+  if (entry.tag === 'meta' && entry.attrs?.property === 'og:title') {
+    return { ...entry, content: seoTitle };
+  }
+  if (entry.tag === 'meta' && entry.attrs?.property === 'og:image') {
+    return { ...entry, attrs: { ...entry.attrs, content: SOCIAL_IMAGE_URL } };
+  }
+  return entry;
+});
+
+const structuredData = buildStructuredData({
+  canonical,
+  description,
+  lang: route.lang,
+  lastUpdated: route.lastUpdated,
+  pageTitle,
+  pathname: Astro.url.pathname,
+  seoTitle,
+});
+---
+
+<DefaultHead />
+<meta name="robots" content={isNotFound ? 'noindex,nofollow' : 'index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1'} />
+<meta name="twitter:title" content={seoTitle} />
+<meta name="twitter:description" content={description} />
+<meta name="twitter:image" content={SOCIAL_IMAGE_URL} />
+<meta name="twitter:image:alt" content="Vinkius Connect TypeScript SDK documentation" />
+<meta property="og:image" content={SOCIAL_IMAGE_URL} />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta property="og:image:alt" content="Vinkius Connect TypeScript SDK documentation" />
+<meta property="article:section" content="Developer documentation" />
+<link rel="alternate" type="text/plain" href="/llms.txt" title="Vinkius Connect documentation for language models" />
+<script is:inline type="application/ld+json" set:html={serializeJsonLd(structuredData)}></script>

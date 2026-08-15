@@ -1,0 +1,18 @@
+---
+const { entry, lang } = Astro.locals.starlightRoute;
+const labels = {
+  en: 'Vinkius Connect Documentation',
+  'pt-BR': 'Documentação do Vinkius Connect',
+  es: 'Documentación de Vinkius Connect',
+  fr: 'Documentation Vinkius Connect',
+} as const;
+const eyebrow = labels[lang as keyof typeof labels] ?? labels.en;
+---
+
+<header class="vk-page-intro">
+  <p class="vk-page-intro__eyebrow">{eyebrow}</p>
+  <h1 id="_top">{entry.data.title}</h1>
+  {entry.data.description && (
+    <p class="vk-page-intro__description">{entry.data.description}</p>
+  )}
+</header>

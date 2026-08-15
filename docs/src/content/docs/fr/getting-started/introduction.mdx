@@ -1,0 +1,92 @@
+---
+title: Passer de connecteurs limités à l’utilisateur à des capacités exécutables
+description: Comprenez le parcours du SDK Connect, d’un utilisateur d’application authentifié aux actions que le code ou un modèle peut exécuter.
+---
+
+Le SDK Vinkius Connect fournit à votre backend une API unique pour configurer des connecteurs de services externes par utilisateur de l’application et récupérer les actions exposées par ces connexions. Votre code peut exécuter une action directement ou convertir les mêmes objets de capacité au format structurel d’outil employé par un environnement d’exécution de modèle.
+
+Le SDK ne fournit ni flux OAuth hébergé ni interface de gestion des données d’authentification. Votre application prend en charge l’authentification, l’autorisation, la collecte des données d’authentification et l’expérience utilisateur ; le SDK communique avec l’API Vinkius et exécute les capacités renvoyées.
+
+## Le parcours de bout en bout
+
+1. Déduire un `externalId` stable de la session authentifiée.
+2. Créer un objet connecteur différé pour cet utilisateur.
+3. Lire le schéma d’authentification du connecteur et recueillir les valeurs requises dans votre flux serveur.
+4. Créer la connexion et écrire ses données d’authentification.
+5. Charger les capacités de l’utilisateur, éventuellement limitées à certains connecteurs.
+6. Exécuter directement une capacité ou la convertir à la frontière avec votre modèle.
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+
+const vinkius = new Vinkius({
+  appId: process.env.VINKIUS_APP_ID!,
+  apiKey: process.env.VINKIUS_APP_KEY!,
+});
+
+async function configureAndListActions(
+  externalId: string,
+  credentials: Record<string, string>,
+) {
+  const user = vinkius.user(externalId);
+  const connector = user.connector('github');
+
+  const schema = await connector.credentials.schema();
+  await connector.connect();
+  const credentialState = await connector.credentials.set(credentials);
+  const capabilities = await user.capabilities({ include: ['github'] });
+
+  return {
+    schema,
+    configured: credentialState.configured,
+    actions: capabilities.map(({ name, description }) => ({ name, description })),
+  };
+}
+```
+
+## Connecteur, connexion et capacité
+
+| Terme | Signification | Exemple |
+| --- | --- | --- |
+| Connecteur | Une intégration disponible dans le catalogue | `github` |
+| Connexion | Un connecteur configuré pour un utilisateur de l’application | La connexion GitHub d’Alice |
+| Capacité | Une action exécutable exposée par une connexion | `github__create_issue` |
+
+`vinkius.user('alice_123')` et `.connector('github')` sont des objets intermédiaires. Leur création n’effectue aucune requête. Les opérations telles que `connect()`, `credentials.set()`, `capabilities()` et `execute()` communiquent avec le réseau.
+
+## La portée utilisateur fait partie de la route
+
+Chaque opération utilisateur est adressée à la fois par les identifiants de votre application et par l’`externalId` transmis par votre backend. Deux utilisateurs peuvent connecter le même connecteur tout en conservant des états de connexion et des données d’authentification distincts.
+
+N’acceptez pas `externalId` comme une entrée client sans restriction. Déduisez-le de la session ou vérifiez que l’appelant est autorisé à agir en son nom avant de créer l’objet.
+
+## Les capacités constituent la frontière d’exécution
+
+Une `Capability` contient :
+
+- un nom d’affichage avec espace de noms pour la recherche côté modèle ;
+- un nom d’action brut du connecteur utilisé pour l’exécution ;
+- une description et un contrat d’entrée JSON Schema ;
+- le connecteur et l’identifiant de connexion nécessaires au routage de la requête ;
+- `execute(args, { signal, idempotencyKey })`.
+
+```typescript
+const capabilities = await vinkius.user('alice_123').capabilities();
+
+for (const capability of capabilities) {
+  console.log(capability.name, capability.inputSchema);
+}
+```
+
+Un `CapabilitySet` vide est un résultat normal. Considérez la disponibilité des capacités comme une donnée d’exécution au lieu de supposer que tous les utilisateurs disposent des mêmes outils.
+
+## Les adaptateurs restent à la frontière avec le modèle
+
+Les capacités principales ne dépendent d’aucun fournisseur de modèle. Les sous-chemins d’adaptateur transforment leurs noms, descriptions et schémas en structures de fournisseur ou d’infrastructure logicielle. Le paquet d’adaptateurs n’a aucune dépendance d’exécution envers ces infrastructures externes ; votre application reste donc responsable du choix et de la vérification d’une version compatible.
+
+## Étapes suivantes
+
+- [Installer le SDK](/fr/getting-started/installation)
+- [Connecter un compte et exécuter une action](/fr/)
+- [Comprendre l’état d’un connecteur](/fr/concepts/connectors)
+- [Choisir un adaptateur](/fr/adapters/overview)

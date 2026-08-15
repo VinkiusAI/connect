@@ -1,0 +1,107 @@
+---
+title: Adaptador para Anthropic
+description: Converta capacidades em definições de ferramentas de Messages e despache blocos tool_use.
+---
+
+Use este adapter quando sua aplicação trocar definições de ferramentas no estilo Messages e receber blocos `tool_use`. Conversão e execução são operações separadas.
+
+## Converta e despache
+
+Este exemplo constrói apenas o bloco estrutural lido pelo dispatcher; ele não depende da API de um cliente externo.
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+import { runAnthropicToolUse, toAnthropicTools, type AnthropicToolUse } from '@vinkius/connect/anthropic';
+
+const vinkius = new Vinkius({
+  appId: 'vk_app_replace_me',
+  apiKey: 'vk_app_sk_replace_me',
+});
+const capabilities = await vinkius.user('user_123').capabilities();
+const tools = toAnthropicTools(capabilities);
+
+const firstTool = tools[0];
+if (firstTool) {
+  const returnedUse: AnthropicToolUse = {
+    name: firstTool.name,
+    input: {},
+  };
+
+  const result = await runAnthropicToolUse(capabilities, returnedUse);
+  console.log(result.content, result.isError);
+}
+```
+
+Passe `tools` para a operação no cliente instalado que aceite esse formato. Depois da execução, sua aplicação é responsável por converter `CapabilityResult` no bloco de resposta esperado pelo loop de conversa.
+
+## Formato convertido
+
+`toAnthropicTools` retorna uma entrada para cada capacidade:
+
+```typescript
+{
+  name: capability.name,
+  description: capability.description,
+  input_schema: capability.inputSchema,
+}
+```
+
+Um schema só é mantido quando é um objeto não vazio; caso contrário, `input_schema` se torna `{ type: 'object', properties: {} }`. Nenhuma validação ou reescrita do schema é executada.
+
+O adapter não tem dependência de runtime de um pacote da Anthropic. Seus exports descrevem um subconjunto estrutural. Confirme esse subconjunto em relação à versão do SDK externo instalada na sua aplicação.
+
+## Nomenclatura e despacho
+
+`runAnthropicToolUse` compara `use.name` com o nome de exibição da capacidade. Ele não compara com `rawName`. O padrão dos nomes de exibição é `${connector}__${rawName}`.
+
+A primeira capacidade com um nome de exibição correspondente é executada, portanto nomes de exibição duplicados dependem da ordem. Use o mesmo array de capacidades na conversão e no despacho.
+
+Um valor `input` nulo ou indefinido observado em runtime se torna `{}`. Fora isso, o adapter repassa o objeto de entrada sem validação ou coerção.
+
+Um nome desconhecido lança um `Error("Unknown capability: …")` simples.
+
+## Resultados e limitações
+
+O dispatcher preserva o `CapabilityResult` completo, incluindo cada parte do conteúdo e `isError`:
+
+```typescript
+const result = await runAnthropicToolUse(capabilities, returnedUse);
+
+if (result.isError) {
+  // A capacidade foi concluída com um resultado de erro.
+}
+```
+
+Um `isError: true` retornado não é lançado. Exceções da execução da capacidade ainda rejeitam a promise.
+
+O helper não cria um bloco de resposta do provedor nem continua o loop do modelo. Ele também não aceita `ExecuteOptions` ou uma `idempotencyKey`; chame diretamente a `Capability` correspondente quando essas opções forem necessárias.
+
+## API pública
+
+O subpath `@vinkius/connect/anthropic` exporta:
+
+```typescript
+interface AnthropicTool {
+  name: string;
+  description: string;
+  input_schema: JSONSchema;
+}
+
+interface AnthropicToolUse {
+  name: string;
+  input: Record<string, unknown>;
+}
+
+function toAnthropicTools(capabilities: readonly Capability[]): AnthropicTool[];
+
+function runAnthropicToolUse(
+  capabilities: readonly Capability[],
+  use: AnthropicToolUse,
+): Promise<CapabilityResult>;
+```
+
+## Relacionado
+
+- Compare [todos os formatos de adapters](/pt/adapters/overview).
+- Leia as referências de [`CapabilitySet`](/pt/reference/client#capabilityset) e [`Capability`](/pt/reference/client#capability).
+- Separe falhas de resultado de exceções com [Tratamento de erros](/pt/guides/error-handling).

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="320" viewBox="0 0 320 320" fill="none" role="img" aria-label="Vinkius Connect">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#22d3ee"/>
+    </linearGradient>
+  </defs>
+  <rect x="40" y="40" width="240" height="240" rx="48" fill="url(#g)" opacity="0.15"/>
+  <circle cx="160" cy="160" r="88" fill="none" stroke="url(#g)" stroke-width="6"/>
+  <path d="M120 132l40 72 40-72" fill="none" stroke="url(#g)" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="160" cy="96" r="10" fill="url(#g)"/>
+</svg>

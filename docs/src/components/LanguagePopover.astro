@@ -1,0 +1,293 @@
+---
+import context from 'virtual:starlight/project-context';
+import config from 'virtual:starlight/user-config';
+
+function stripTrailingSlash(path: string): string {
+  return path.endsWith('/') ? path.slice(0, -1) : path;
+}
+
+function localizedPathname(locale: string | undefined): string {
+  const url = new URL(Astro.url);
+  if (!config.locales) return url.pathname;
+
+  if (locale === 'root') locale = '';
+  const base = stripTrailingSlash(import.meta.env.BASE_URL);
+  const hasBase = url.pathname.startsWith(base);
+  if (hasBase) url.pathname = url.pathname.replace(base, '');
+
+  const [, baseSegment] = url.pathname.split('/');
+  const htmlExtension = '.html';
+  const isRootHtml = baseSegment?.endsWith(htmlExtension);
+  const baseSlug = isRootHtml
+    ? baseSegment.slice(0, -htmlExtension.length)
+    : baseSegment;
+
+  if (baseSlug && baseSlug in config.locales) {
+    if (locale) {
+      url.pathname = url.pathname.replace(baseSlug, locale);
+    } else if (isRootHtml) {
+      url.pathname = '/index.html';
+    } else {
+      url.pathname = url.pathname.replace(`/${baseSlug}`, '');
+    }
+  } else if (locale) {
+    url.pathname = baseSegment === 'index.html'
+      ? `/${locale}.html`
+      : `/${locale}${url.pathname}`;
+  }
+
+  if (hasBase) url.pathname = base + url.pathname;
+  if (context.trailingSlash === 'never') {
+    url.pathname = stripTrailingSlash(url.pathname);
+  }
+  return url.pathname || '/';
+}
+
+const currentLocale = Astro.locals.starlightRoute.locale ?? 'root';
+const languageCodes = {
+  root: 'EN',
+  pt: 'PT',
+  es: 'ES',
+  fr: 'FR',
+} as const;
+const currentLanguage = languageCodes[currentLocale as keyof typeof languageCodes]
+  ?? config.locales?.[currentLocale]?.label
+  ?? 'EN';
+const popoverId = `vk-language-${Math.random().toString(36).slice(2)}`;
+---
+
+{config.isMultilingual && (
+  <vk-language-popover>
+    <button
+      class="vk-language__trigger"
+      type="button"
+      popovertarget={popoverId}
+      aria-haspopup="menu"
+      aria-expanded="false"
+      aria-label={Astro.locals.t('languageSelect.accessibleLabel')}
+      title={Astro.locals.t('languageSelect.accessibleLabel')}
+    >
+      <svg class="vk-language__icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M3 5h10M8 3v2m3.5 0c-.72 4.05-3.28 7.34-7 9M6 9.5c1.26 2.13 3.03 3.85 5.25 5.1M13 21l4.25-10L21.5 21M14.5 17.5H20" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"></path>
+      </svg>
+      <span class="vk-language__label">{currentLanguage}</span>
+      <svg class="vk-language__chevron" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="m5 6 3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path>
+      </svg>
+    </button>
+
+    <div id={popoverId} class="vk-language__panel" popover="auto" role="menu">
+      <div class="vk-language__heading">{Astro.locals.t('languageSelect.accessibleLabel')}</div>
+      <div class="vk-language__options">
+        {Object.entries(config.locales).map(([code, locale]) => {
+          const isCurrent = code === currentLocale;
+          return (
+            <a
+              class:list={['vk-language__option', { 'is-current': isCurrent }]}
+              href={localizedPathname(code)}
+              lang={locale?.lang}
+              hreflang={locale?.lang}
+              role="menuitem"
+              aria-current={isCurrent ? 'page' : undefined}
+            >
+              <span>{locale?.label}</span>
+              {isCurrent && (
+                <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path d="m3.5 8.5 3 3 6-7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"></path>
+                </svg>
+              )}
+            </a>
+          );
+        })}
+      </div>
+    </div>
+  </vk-language-popover>
+)}
+
+<script>
+  class VinkiusLanguagePopover extends HTMLElement {
+    private trigger: HTMLButtonElement | null;
+    private panel: HTMLElement | null;
+
+    constructor() {
+      super();
+      this.trigger = this.querySelector<HTMLButtonElement>('.vk-language__trigger');
+      this.panel = this.querySelector<HTMLElement>('.vk-language__panel');
+      if (!this.trigger || !this.panel) return;
+
+      this.panel.addEventListener('toggle', () => {
+        const isOpen = this.panel?.matches(':popover-open') ?? false;
+        this.trigger?.setAttribute('aria-expanded', String(isOpen));
+        this.classList.toggle('is-open', isOpen);
+        if (isOpen) this.positionPanel();
+      });
+
+      window.addEventListener('resize', () => {
+        if (this.panel?.matches(':popover-open')) this.positionPanel();
+      });
+    }
+
+    private positionPanel(): void {
+      if (!this.trigger || !this.panel) return;
+      const triggerRect = this.trigger.getBoundingClientRect();
+      const panelRect = this.panel.getBoundingClientRect();
+      const gutter = 12;
+      const left = Math.min(
+        window.innerWidth - panelRect.width - gutter,
+        Math.max(gutter, triggerRect.right - panelRect.width),
+      );
+      const roomBelow = window.innerHeight - triggerRect.bottom;
+      const top = roomBelow >= panelRect.height + gutter
+        ? triggerRect.bottom + 8
+        : Math.max(gutter, triggerRect.top - panelRect.height - 8);
+
+      this.panel.style.left = `${left}px`;
+      this.panel.style.top = `${top}px`;
+    }
+  }
+
+  if (!customElements.get('vk-language-popover')) {
+    customElements.define('vk-language-popover', VinkiusLanguagePopover);
+  }
+</script>
+
+<style>
+  @layer starlight.core {
+    vk-language-popover {
+      display: inline-flex;
+      flex: 0 0 auto;
+      font-family: var(--sl-font);
+    }
+
+    .vk-language__trigger {
+      height: var(--vk-header-control-height);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.45rem;
+      border: 0;
+      border-radius: 0;
+      padding-inline: 0.7rem;
+      color: rgba(255, 255, 255, 0.66);
+      background: transparent;
+      font: inherit;
+      font-family: var(--sl-font-mono);
+      font-size: 0.63rem;
+      font-weight: 600;
+      letter-spacing: 0.045em;
+      cursor: pointer;
+      transition: color 140ms ease, background-color 140ms ease;
+    }
+
+    .vk-language__trigger:hover,
+    vk-language-popover.is-open .vk-language__trigger {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.045);
+    }
+
+    .vk-language__icon {
+      width: 0.95rem;
+      height: 0.95rem;
+      flex: 0 0 auto;
+    }
+
+    .vk-language__chevron {
+      width: 0.68rem;
+      height: 0.68rem;
+      flex: 0 0 auto;
+      opacity: 0.55;
+      transition: opacity 160ms ease, transform 160ms ease;
+    }
+
+    vk-language-popover.is-open .vk-language__chevron {
+      opacity: 1;
+      transform: rotate(180deg);
+    }
+
+    .vk-language__panel {
+      position: fixed;
+      inset: auto;
+      width: min(14rem, calc(100vw - 1.5rem));
+      max-height: calc(100dvh - 1.5rem);
+      margin: 0;
+      overflow-y: auto;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 0;
+      padding: 0.4rem;
+      color: #fff;
+      background: #050505;
+      box-shadow: none;
+      font-family: var(--sl-font);
+    }
+
+    .vk-language__panel:popover-open {
+      animation: vk-popover-in 140ms ease-out;
+    }
+
+    .vk-language__heading {
+      margin: 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+      padding: 0.55rem 0.6rem 0.7rem;
+      color: rgba(255, 255, 255, 0.44);
+      font-family: var(--sl-font-mono);
+      font-size: 0.57rem;
+      font-weight: 600;
+      letter-spacing: 0.11em;
+      text-transform: uppercase;
+    }
+
+    .vk-language__options {
+      display: grid;
+      gap: 0;
+    }
+
+    .vk-language__option {
+      min-height: 2.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      border: 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.065);
+      border-radius: 0;
+      padding: 0.5rem 0.65rem;
+      color: rgba(255, 255, 255, 0.66) !important;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-decoration: none;
+      transition: color 140ms ease, background-color 140ms ease;
+    }
+
+    .vk-language__option:last-child {
+      border-bottom: 0;
+    }
+
+    .vk-language__option:hover {
+      color: #fff !important;
+      background: rgba(255, 255, 255, 0.045);
+    }
+
+    .vk-language__option.is-current {
+      color: #fff !important;
+      background: rgba(223, 255, 79, 0.055);
+      box-shadow: inset 2px 0 0 #dfff4f;
+    }
+
+    .vk-language__option svg {
+      width: 0.85rem;
+      height: 0.85rem;
+      color: #dfff4f;
+    }
+
+    @keyframes vk-popover-in {
+      from { opacity: 0; transform: translateY(-2px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @media (max-width: 49.999rem) {
+      .vk-language__trigger {
+        border: 1px solid rgba(255, 255, 255, 0.1);
+      }
+    }
+  }
+</style>

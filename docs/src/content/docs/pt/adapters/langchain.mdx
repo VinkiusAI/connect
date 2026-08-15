@@ -1,0 +1,103 @@
+---
+title: Adaptador para LangChain
+description: Crie ferramentas no estilo LangChain por meio de uma fábrica injetada e de um callback que retorna string.
+---
+
+Use este adapter quando sua aplicação tiver uma fábrica `tool(func, config)` compatível com o contrato estrutural abaixo. O adapter invoca essa fábrica uma vez para cada capacidade e retorna os valores resultantes.
+
+## Converta e execute
+
+A fábrica local mantém este exemplo autocontido. Substitua-a pela fábrica do framework instalado somente quando sua assinatura aceitar os mesmos argumentos.
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+import { toLangChainTools, type LangChainToolFactory } from '@vinkius/connect/langchain';
+
+type ExampleTool = {
+  name: string;
+  description: string;
+  schema: Record<string, unknown>;
+  invoke: (input: Record<string, unknown>) => Promise<string>;
+};
+
+const tool: LangChainToolFactory<ExampleTool> = (func, config) => ({
+  ...config,
+  invoke: func,
+});
+
+const vinkius = new Vinkius({
+  appId: 'vk_app_replace_me',
+  apiKey: 'vk_app_sk_replace_me',
+});
+const capabilities = await vinkius.user('user_123').capabilities();
+const tools = toLangChainTools(capabilities, { tool });
+
+const firstTool = tools[0];
+if (firstTool) {
+  const text = await firstTool.invoke({});
+  console.log(text);
+}
+```
+
+O adapter não tem dependência de runtime do LangChain. Ele retorna exatamente o `T[]` produzido pela sua fábrica.
+
+## Contrato da fábrica
+
+Para cada capacidade, o adapter chama:
+
+```typescript
+tool(async (input) => string, {
+  name: capability.name,
+  description: capability.description,
+  schema: capability.inputSchema,
+});
+```
+
+`schema` é JSON Schema bruto. Um objeto não vazio é preservado; outros valores de runtime são substituídos por `{ type: 'object', properties: {} }`. O adapter não converte o schema para outra biblioteca de validação.
+
+Este contrato só é estruturalmente compatível quando a fábrica da versão instalada do seu framework aceita esses argumentos. Nenhuma versão de API externa é incluída nem testada por meio de uma dependência do pacote.
+
+## Nomenclatura e execução
+
+`config.name` usa o nome de exibição da capacidade, cujo padrão é `${connector}__${rawName}`. Cada callback captura sua capacidade; não há dispatcher separado nem consulta de nome. Nomes duplicados permanecem entradas separadas no array, e o comportamento posterior não é decidido por este adapter.
+
+O callback executa a capacidade e retorna:
+
+```typescript
+result.content.map((part) => part.text).join('\n');
+```
+
+Um array de conteúdo vazio retorna `''`. Exceções da execução rejeitam a promise do callback.
+
+## Perda no retorno e limitações
+
+O callback retorna uma string, portanto descarta `CapabilityResult.isError` e cada `content[].type`. As quebras de linha preservam apenas a ordem das partes de texto, não seus tipos originais.
+
+Chame `capability.execute()` diretamente quando seu agente precisar do resultado completo. O callback vinculado também não pode receber `ExecuteOptions` nem encaminhar uma `idempotencyKey`.
+
+## API pública
+
+O subpath `@vinkius/connect/langchain` exporta:
+
+```typescript
+type LangChainToolFactory<T> = (
+  func: (input: Record<string, unknown>) => Promise<string>,
+  config: {
+    name: string;
+    description: string;
+    schema: JSONSchema;
+  },
+) => T;
+
+interface ToLangChainOptions<T> {
+  tool: LangChainToolFactory<T>;
+}
+
+function toLangChainTools<T>(capabilities: readonly Capability[], options: ToLangChainOptions<T>): T[];
+```
+
+## Relacionado
+
+- Compare [todos os modos de retorno dos adapters](/pt/adapters/overview).
+- Leia as referências de [`CapabilitySet`](/pt/reference/client#capabilityset) e [`Capability`](/pt/reference/client#capability).
+- Trate a execução direta com [Tratamento de erros](/pt/guides/error-handling).

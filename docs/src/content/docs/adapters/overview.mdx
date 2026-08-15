@@ -1,0 +1,114 @@
+---
+title: Adapters Overview
+description: Choose an adapter by tool format, dispatch model, and execution result.
+---
+
+Adapters convert a user's `CapabilitySet` at the boundary between Vinkius Connect and your model or agent runtime. They do not fetch capabilities or run a model.
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+
+const vinkius = new Vinkius({
+  appId: 'vk_app_replace_me',
+  apiKey: 'vk_app_sk_replace_me',
+});
+
+const capabilities = await vinkius.user('user_123').capabilities();
+```
+
+`capabilities` extends `Array<Capability>`. Each capability carries a display name, raw connector name, description, input JSON Schema, connection identity, and an `execute()` method. Pass this same array to an adapter where your application exposes tools to a runtime.
+
+## Choose an adapter
+
+| Stack                                                 | Public subpath                   | Converted format                                  | Dispatcher                              | Execution return   | Information loss                             |
+| ----------------------------------------------------- | -------------------------------- | ------------------------------------------------- | --------------------------------------- | ------------------ | -------------------------------------------- |
+| [OpenAI Chat Completions](/adapters/openai)           | `@vinkius/connect/openai`        | `OpenAIFunctionTool[]`                            | `runOpenAIToolCall` by display name     | `CapabilityResult` | None                                         |
+| [OpenAI Agents](/adapters/openai-agents)              | `@vinkius/connect/openai-agents` | `T[]` from an injected `tool` factory             | Bound `execute` callback                | `string`           | Drops `isError` and `content[].type`         |
+| [Anthropic Messages](/adapters/anthropic)             | `@vinkius/connect/anthropic`     | `AnthropicTool[]` with `input_schema`             | `runAnthropicToolUse` by display name   | `CapabilityResult` | None                                         |
+| [Vercel AI SDK](/adapters/ai-sdk)                     | `@vinkius/connect/ai-sdk`        | `Record<string, AISDKTool>` keyed by display name | Bound `execute` callback                | `CapabilityResult` | None; duplicate keys overwrite earlier tools |
+| [Google Gemini](/adapters/gemini)                     | `@vinkius/connect/gemini`        | `GeminiFunctionDeclaration[]`                     | `runGeminiFunctionCall` by display name | `CapabilityResult` | None                                         |
+| [LangChain.js](/adapters/langchain)                   | `@vinkius/connect/langchain`     | `T[]` from an injected `tool` factory             | Bound function callback                 | `string`           | Drops `isError` and `content[].type`         |
+| [LlamaIndex.TS](/adapters/llamaindex)                 | `@vinkius/connect/llamaindex`    | `T[]` from an injected `tool` factory             | Bound function callback                 | `string`           | Drops `isError` and `content[].type`         |
+| [Cloudflare Workers AI](/adapters/workers-ai)         | `@vinkius/connect/workers-ai`    | `WorkersAITool[]` with a bound `function`         | Bound `function` callback               | `string`           | Drops `isError` and `content[].type`         |
+| [JSON Schema / custom runtime](/adapters/json-schema) | `@vinkius/connect/json-schema`   | `JSONSchemaTool[]`                                | `executeByName` by display or raw name  | `CapabilityResult` | None; raw-name matching can be ambiguous     |
+
+Choose a provider adapter when your application receives a provider call object and dispatches it. Choose a factory adapter when a framework constructs its own tool objects. Choose JSON Schema when you own the transport and need definitions without a framework envelope.
+
+## Conversion rules
+
+Every converter accepts `readonly Capability[]`, so it accepts a `CapabilitySet` directly. Converters copy:
+
+- `capability.name` into the exposed tool name;
+- `capability.description` into the tool description;
+- `capability.inputSchema` into the adapter-specific schema field.
+
+A schema is preserved when it is a non-empty object. A missing, empty, non-object, or otherwise falsy runtime schema is normalized to:
+
+```json
+{ "type": "object", "properties": {} }
+```
+
+Adapters do not validate JSON Schema, arguments, or provider-specific naming rules.
+
+## Names and matching
+
+The default display name is `${connector}__${rawName}`. For example, raw name `create_issue` from connector `github` becomes `github__create_issue`.
+
+OpenAI, Anthropic, and Gemini dispatch only by the display name emitted during conversion. Their array lookup returns the first matching capability when display names are duplicated. The AI SDK returns a `Record`; assigning a duplicate display name replaces the earlier entry with the later one.
+
+`executeByName` in the JSON Schema adapter accepts either display or raw names. It returns the first array item matching either form. A raw name shared by multiple connectors is therefore ambiguous; prefer the namespaced display name.
+
+## Execution and errors
+
+OpenAI, Anthropic, Gemini, JSON Schema, and AI SDK execution preserve the complete result:
+
+```typescript
+interface CapabilityResult {
+  content: Array<{ type: string; text: string }>;
+  isError: boolean;
+}
+```
+
+`isError: true` is a capability result, not an exception. However, explicit dispatchers throw a plain `Error` for an unknown name, and exceptions from capability execution continue to reject the promise.
+
+OpenAI Agents, LangChain, LlamaIndex, and Workers AI instead join `content[].text` with `\n`. Their callback contract returns `string`, so `isError` and each content part's `type` are not available after conversion.
+
+Adapter dispatchers and bound callbacks call `capability.execute(args)` without `ExecuteOptions`. They cannot receive an `idempotencyKey`. Call the selected `Capability` directly when you need:
+
+```typescript
+const firstCapability = capabilities[0];
+
+if (firstCapability) {
+  const result = await firstCapability.execute(
+    {},
+    {
+      idempotencyKey: 'request_123',
+    },
+  );
+  console.log(result.content, result.isError);
+}
+```
+
+## Package boundaries
+
+The package publishes these adapter subpaths explicitly:
+
+```text
+@vinkius/connect/openai
+@vinkius/connect/openai-agents
+@vinkius/connect/anthropic
+@vinkius/connect/ai-sdk
+@vinkius/connect/gemini
+@vinkius/connect/langchain
+@vinkius/connect/llamaindex
+@vinkius/connect/workers-ai
+@vinkius/connect/json-schema
+```
+
+`@vinkius/connect` declares zero runtime dependencies and zero peer dependencies. Provider-shaped adapters use local structural types; factory adapters receive a function from your application. This describes the emitted shape, not compatibility with every version of an external framework. Check the shape expected by the version installed in your application.
+
+## Next steps
+
+- Open the adapter page matching your runtime from the table above.
+- Read the [`CapabilitySet`](/reference/client#capabilityset) and [`Capability`](/reference/client#capability) references.
+- Separate returned failures from thrown exceptions with [Error Handling](/guides/error-handling).

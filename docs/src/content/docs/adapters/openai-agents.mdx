@@ -1,0 +1,106 @@
+---
+title: OpenAI Agents Adapter
+description: Build agent tools through an injected factory and execute capabilities as string callbacks.
+---
+
+Use this adapter when your agent framework constructs tools through an object-form `tool(config)` factory. Your application supplies that factory; the adapter supplies one configuration per capability.
+
+## Convert and execute
+
+The identity factory below makes the example self-contained while preserving the adapter's exact contract. In an application, replace it with the factory from the framework version you use when its signature matches.
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+import { toOpenAIAgentsTools, type OpenAIAgentsToolFactory } from '@vinkius/connect/openai-agents';
+
+type ExampleAgentTool = {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  strict: boolean;
+  execute: (args: Record<string, unknown>) => Promise<string>;
+};
+
+const tool: OpenAIAgentsToolFactory<ExampleAgentTool> = (config) => config;
+
+const vinkius = new Vinkius({
+  appId: 'vk_app_replace_me',
+  apiKey: 'vk_app_sk_replace_me',
+});
+const capabilities = await vinkius.user('user_123').capabilities();
+const tools = toOpenAIAgentsTools(capabilities, { tool });
+
+const firstTool = tools[0];
+if (firstTool) {
+  const text = await firstTool.execute({});
+  console.log(text);
+}
+```
+
+There is no separate dispatcher. Each returned tool closes over the capability from the same array position.
+
+## Factory contract
+
+For every capability, `toOpenAIAgentsTools` calls the injected factory once:
+
+```typescript
+tool({
+  name: capability.name,
+  description: capability.description,
+  parameters: capability.inputSchema,
+  strict: false,
+  execute: async (args) => string,
+});
+```
+
+A schema is passed through when it is a non-empty object; otherwise it becomes `{ type: 'object', properties: {} }`.
+
+`strict` is always `false`. The adapter neither validates nor rewrites connector schemas for a strict-schema mode. It has no runtime dependency on an Agents package and returns exactly the `T` values created by the injected factory. This is structural integration, not a promise about untested framework versions.
+
+## Naming and execution
+
+The factory receives the display name, which defaults to `${connector}__${rawName}`. The callback does not look up a name at execution time, so it cannot throw an unknown-name error. Duplicate display names remain duplicate entries in the returned array; any downstream handling is outside this adapter.
+
+The bound callback calls `capability.execute(args)` and converts the result with:
+
+```typescript
+result.content.map((part) => part.text).join('\n');
+```
+
+An empty content array becomes an empty string. Exceptions still reject the callback promise.
+
+## Return loss and limits
+
+The callback returns `Promise<string>`, not `Promise<CapabilityResult>`. Conversion discards:
+
+- `result.isError`, including the distinction between success and an error result;
+- every `content[].type` value;
+- content part boundaries, except for inserted newline characters.
+
+Execute the original `Capability` directly when your loop needs the full result. The callback also has no `ExecuteOptions` parameter, so it cannot forward `idempotencyKey`.
+
+## Public API
+
+The `@vinkius/connect/openai-agents` subpath exports:
+
+```typescript
+type OpenAIAgentsToolFactory<T> = (config: {
+  name: string;
+  description: string;
+  parameters: JSONSchema;
+  strict: boolean;
+  execute: (args: Record<string, unknown>) => Promise<string>;
+}) => T;
+
+interface ToOpenAIAgentsOptions<T> {
+  tool: OpenAIAgentsToolFactory<T>;
+}
+
+function toOpenAIAgentsTools<T>(capabilities: readonly Capability[], options: ToOpenAIAgentsOptions<T>): T[];
+```
+
+## Related
+
+- Use the [`openai` adapter](/adapters/openai) for explicit Chat Completions dispatch.
+- Compare [all adapter return modes](/adapters/overview).
+- Execute capabilities directly with the [`Capability` API](/reference/client#capability).

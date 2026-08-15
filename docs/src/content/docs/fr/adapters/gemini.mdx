@@ -1,0 +1,105 @@
+---
+title: Adaptateur Google Gemini
+description: Convertissez les capacités en déclarations de fonction et dispatchez les appels de fonction renvoyés.
+---
+
+Utilisez cet adaptateur lorsque votre application envoie des déclarations de fonction au format Gemini et reçoit des appels de fonction. Le convertisseur renvoie uniquement des déclarations ; votre application fournit le protocole environnant de requête et de réponse.
+
+## Convertir et dispatcher
+
+Cet exemple utilise exactement les champs structurels de l’appel consommés par l’adaptateur et n’appelle aucun SDK externe.
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+import { runGeminiFunctionCall, toGeminiTools, type GeminiFunctionCall } from '@vinkius/connect/gemini';
+
+const vinkius = new Vinkius({
+  appId: 'vk_app_replace_me',
+  apiKey: 'vk_app_sk_replace_me',
+});
+const capabilities = await vinkius.user('user_123').capabilities();
+const declarations = toGeminiTools(capabilities);
+const tools = [{ functionDeclarations: declarations }];
+
+const firstDeclaration = declarations[0];
+if (firstDeclaration) {
+  const returnedCall: GeminiFunctionCall = {
+    name: firstDeclaration.name,
+    args: {},
+  };
+
+  const result = await runGeminiFunctionCall(capabilities, returnedCall);
+  console.log(result.content, result.isError);
+}
+```
+
+`tools` illustre l’enveloppe habituellement requise autour des déclarations, mais l’adaptateur lui-même ne renvoie que `GeminiFunctionDeclaration[]`. Utilisez la forme de requête documentée par la version du client externe installée dans votre application.
+
+## Format converti
+
+Chaque déclaration possède cette forme :
+
+```typescript
+{
+  name: capability.name,
+  description: capability.description,
+  parameters: capability.inputSchema,
+}
+```
+
+Un schéma absent, vide, falsy ou qui n’est pas un objet à l’exécution devient `{ type: 'object', properties: {} }`. L’adaptateur ne valide ni n’adapte les schémas aux contraintes propres au fournisseur.
+
+Le package n’importe aucun client Google. Ses interfaces de déclaration et d’appel sont des types structurels locaux ; vous devez donc vérifier leur compatibilité avec la version du client utilisée par votre application.
+
+## Nommage et dispatch
+
+`runGeminiFunctionCall` compare `call.name` uniquement à `capability.name`. Il n’utilise pas `rawName`. Par défaut, les noms d’affichage valent `${connector}__${rawName}`.
+
+La recherche renvoie la première correspondance. Des noms d’affichage dupliqués exécutent la première capacité correspondante dans l’ordre du tableau. Des `args` absents deviennent `{}` ; les arguments fournis sont transmis sans validation.
+
+Un nom inconnu lève une simple `Error("Unknown capability: …")`.
+
+## Résultats et limites
+
+Le dispatch renvoie le `CapabilityResult` complet :
+
+```typescript
+{
+  content: Array<{ type: string; text: string }>;
+  isError: boolean;
+}
+```
+
+`isError: true` reste un résultat renvoyé. Les exceptions d’exécution rejettent toujours la promesse.
+
+L’adaptateur ne crée pas d’objet de réponse de fonction et ne soumet pas de nouvelle requête au modèle. `runGeminiFunctionCall` ne possède pas non plus de paramètre `ExecuteOptions` et ne peut pas transmettre `idempotencyKey` ; exécutez directement la capacité sélectionnée lorsque vous avez besoin d’options propres à l’exécution.
+
+## API publique
+
+Le sous-chemin `@vinkius/connect/gemini` exporte :
+
+```typescript
+interface GeminiFunctionDeclaration {
+  name: string;
+  description: string;
+  parameters: JSONSchema;
+}
+
+interface GeminiFunctionCall {
+  name: string;
+  args?: Record<string, unknown>;
+}
+
+function toGeminiTools(capabilities: readonly Capability[]): GeminiFunctionDeclaration[];
+
+function runGeminiFunctionCall(
+  capabilities: readonly Capability[],
+  call: GeminiFunctionCall,
+): Promise<CapabilityResult>;
+```
+
+## Voir aussi
+
+- Comparez [tous les modes de retour des adaptateurs](/fr/adapters/overview).
+- Consultez les références de [`CapabilitySet`](/fr/reference/client#capabilityset) et de [`Capability`](/fr/reference/client#capability).
+- Gérez les échecs de résultat et les exceptions avec la [gestion des erreurs](/fr/guides/error-handling).

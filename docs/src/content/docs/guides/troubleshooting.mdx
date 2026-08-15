@@ -1,0 +1,190 @@
+---
+title: Troubleshoot by symptom
+description: Identify configuration, authentication, connection, capability, dispatch, validation, timeout, and quota failures from their observable behavior.
+---
+
+Start with the value you received: a thrown error, an empty capability set, a connector status, or a resolved `CapabilityResult`. Those signals correspond to different layers and require different fixes.
+
+## The constructor throws before any request
+
+### `appId` or `apiKey` prefix error
+
+Use the public ID and secret key in their correct fields:
+
+```typescript
+const vinkius = new Vinkius({
+  appId: 'vk_app_...',
+  apiKey: 'vk_app_sk_...',
+});
+```
+
+The public App ID must begin with `vk_app_` but not `vk_app_sk_`. The key must begin with `vk_app_sk_`.
+
+### `No global fetch found`
+
+Use Node.js 18 or later, a runtime with global `fetch`, or pass a compatible implementation through the constructor's `fetch` option.
+
+### `Invalid externalId`
+
+Use your application's user ID, not a `vk_app_user_...` identifier. It must be 1–255 characters and cannot contain whitespace, `/`, or `\`.
+
+## Requests throw `AuthError`
+
+An HTTP `401` or `403` maps to `AuthError`.
+
+1. Confirm the environment variables were loaded in the server process.
+2. Confirm the Application Key belongs to the configured App ID and environment.
+3. Replace a revoked or rotated key.
+4. Check that deployment code did not substitute App ID and key.
+5. Record `requestId` when present, but never log the key.
+
+## Connector status is `not_connected`
+
+A handle does not create a connection:
+
+```typescript
+const connector = vinkius.user(externalId).connector('github');
+console.log(await connector.status()); // may be 'not_connected'
+
+await connector.connect();
+```
+
+`connect()` performs the get-or-create request. `credentials.status()`, `credentials.set()`, `disconnect()`, and connector-scoped `capabilities()` throw `ConnectorNotConnectedError` until a connection exists.
+
+## Connector status is `needs_credentials`
+
+Read the catalog schema, collect the required values in your server flow, and write them:
+
+```typescript
+const schema = await connector.credentials.schema();
+const state = await connector.credentials.set(values);
+
+console.log(schema, state.configured);
+```
+
+`schema()` can run before connection; `set()` cannot. Compare submitted key names to the schema and inspect `ValidationError.errors` if the service rejects them. Stored values are not returned.
+
+## Connector status is `disabled`
+
+The connection exists but its API status is not active. Rewriting credentials may not change that condition. Show the user that the connection cannot execute, inspect the connection response through the low-level client if needed, or replace the connection according to your application flow.
+
+## `user.capabilities()` returns an empty set
+
+An empty set is valid. Inspect scope and filters:
+
+```typescript
+const user = vinkius.user(externalId);
+const connectors = await user.connectors();
+const capabilities = await user.capabilities({ include: ['github'] });
+
+console.log({ connectors, count: capabilities.length });
+```
+
+Check these in order:
+
+1. `externalId` came from the intended authenticated session.
+2. The expected slug appears in `connectors()`.
+3. Its derived status is `ready`.
+4. `include` uses the exact slug expected by the service.
+5. `exclude` did not remove the connector locally.
+6. The aggregated endpoint actually returned actions for the connection.
+
+The client converts the endpoint response; it does not add a local readiness filter.
+
+## Capability lookup returns `undefined`
+
+Inspect both names:
+
+```typescript
+for (const capability of capabilities) {
+  console.log(capability.name, capability.rawName, capability.connector);
+}
+```
+
+The default display name is namespaced, such as `github__create_issue`. `findCapability()` accepts display or raw name and returns the first match. When raw names collide, call `forConnector(slug)` first or use the namespaced display name.
+
+If you supplied `namespaceCapability`, verify that its output matches provider naming constraints and remains unique; adapters do not enforce either rule.
+
+## An adapter dispatcher throws `Unknown capability`
+
+Pass the same capability array to conversion and dispatch, and preserve the returned display name exactly:
+
+```typescript
+const tools = toOpenAITools(capabilities);
+// Send tools to the model, then:
+const result = await runOpenAIToolCall(capabilities, returnedCall);
+```
+
+OpenAI, Anthropic, and Gemini dispatchers match display names only. JSON Schema dispatch accepts display or raw names, with first-match ambiguity for duplicate raw names. Unknown dispatch names throw plain `Error`, not `VinkiusError`.
+
+## OpenAI arguments unexpectedly become `{}`
+
+`runOpenAIToolCall` parses `call.function.arguments`. Empty strings, malformed JSON, JSON `null`, and primitive JSON are all converted to `{}`. Validate or log the parsed shape in your own model loop if malformed arguments must be rejected rather than tolerated.
+
+## Execution resolves with `isError: true`
+
+The HTTP request completed and the capability reported a failed action. Inspect the returned content:
+
+```typescript
+const result = await capability.execute(args, options);
+
+if (result.isError) {
+  console.error(result.content.map((part) => part.text).join('\n'));
+}
+```
+
+Do not expect this branch in `catch`. A provider loop can return the result to the model, while a deterministic route can map it to an application error response.
+
+Factory adapters that return strings discard `isError`, so execute the original capability directly when this distinction matters.
+
+## Execution timed out or threw `ConnectionError`
+
+Reads and other repeatable operations may be retried automatically. Capability execution is retried only when `idempotencyKey` is not `undefined`.
+
+```typescript
+if (!operationId) throw new Error('operationId is required');
+
+await capability.execute(args, {
+  idempotencyKey: `create-issue:${operationId}`,
+});
+```
+
+Do not pass an empty key: the current implementation can classify it as retryable without sending the header. After a timeout without a valid key, the external action may have completed; reconcile it before sending a new operation.
+
+Adapter dispatch helpers cannot pass an idempotency key or signal. Use direct execution for side effects that need those controls.
+
+## A rate or plan error persists
+
+- `RateLimitError` may provide `retryAfterMs` after automatic retries finish.
+- `QuotaError` and `OverageError` may provide `upgradeUrl`; repeating unchanged does not alter a plan limit.
+- The transport treats `429` as transient before mapping its body, so repeatable requests can consume retries before a final quota error.
+
+## Hooks do not show a network failure
+
+`onResponse` runs only after an HTTP response. A timeout or network error without a response does not invoke it. `onRequest` runs before each attempt, so a request log without a response log can indicate transport failure.
+
+Hook exceptions propagate as their original values. Keep hooks non-throwing. The SDK redacts a fixed list of exact field names rather than every custom secret-shaped key.
+
+## Capture diagnostics for support
+
+```typescript
+import { VinkiusError } from '@vinkius/connect';
+
+if (error instanceof VinkiusError) {
+  console.error({
+    code: error.code,
+    status: error.status,
+    requestId: error.requestId,
+    connector: connector.slug,
+    occurredAt: new Date().toISOString(),
+  });
+}
+```
+
+A local or transport failure may not have `requestId`. Do not include application keys, credential values, authorization headers, or unreviewed `error.details`.
+
+## Next steps
+
+- [Implement the complete failure model](/guides/error-handling)
+- [Review connector state transitions](/concepts/connectors)
+- [Check adapter-specific parsing and result behavior](/adapters/overview)

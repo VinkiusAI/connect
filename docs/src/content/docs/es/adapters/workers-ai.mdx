@@ -1,0 +1,90 @@
+---
+title: Adaptador Workers AI
+description: Convierte capacidades en objetos de herramienta integrados de Workers AI con funciones de texto vinculadas.
+---
+
+Usa este adaptador cuando tu utilidad de Workers AI acepte objetos de herramienta que contengan `{ name, description, parameters, function }`. Cada función ya está vinculada a la capacidad de usuario correspondiente.
+
+## Convertir y ejecutar
+
+Este ejemplo prueba el contrato completo del adaptador sin importar un paquete externo de Workers AI.
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+import { toWorkersAITools } from '@vinkius/connect/workers-ai';
+
+const vinkius = new Vinkius({
+  appId: 'vk_app_replace_me',
+  apiKey: 'vk_app_sk_replace_me',
+});
+const capabilities = await vinkius.user('user_123').capabilities();
+const tools = toWorkersAITools(capabilities);
+
+const firstTool = tools[0];
+if (firstTool) {
+  const text = await firstTool.function({});
+  console.log(text);
+}
+```
+
+Pasa `tools` a la operación de tu utilidad Workers AI instalada que acepte esta forma con una función integrada. El adaptador no realiza ninguna solicitud al modelo.
+
+## Formato convertido
+
+`toWorkersAITools` devuelve un objeto por capacidad:
+
+```typescript
+{
+  name: capability.name,
+  description: capability.description,
+  parameters: capability.inputSchema,
+  function: async (args) => string,
+}
+```
+
+Se conserva un objeto de esquema no vacío. Cualquier esquema de runtime vacío, ausente, falsy o que no sea un objeto se convierte en `{ type: 'object', properties: {} }`.
+
+`WorkersAITool` es una interfaz estructural local y el paquete no importa ninguna dependencia de runtime de Cloudflare. Confirma que esta forma coincida con la versión de la utilidad externa instalada por tu aplicación.
+
+## Nombres y ejecución
+
+`name` usa el nombre de visualización, que por defecto es `${connector}__${rawName}`. La función se cierra sobre una capacidad y no busca nombres, por lo que no hay un dispatcher independiente ni un error por nombre desconocido. Los nombres duplicados permanecen como entradas duplicadas del array.
+
+La función llama a `capability.execute(args)` y devuelve:
+
+```typescript
+result.content.map((part) => part.text).join('\n');
+```
+
+No se analizan ni se validan los argumentos. Un array de contenido vacío devuelve un string vacío, y las excepciones de ejecución rechazan la promesa.
+
+## Pérdida del retorno y límites
+
+La función integrada devuelve `Promise<string>`, no `CapabilityResult`. Descarta:
+
+- `result.isError`;
+- todos los valores `content[].type`;
+- los límites entre las partes de contenido, salvo por los saltos de línea insertados.
+
+Llama directamente a la capacidad de origen cuando necesites el resultado completo. La función integrada no tiene un argumento `ExecuteOptions` y no puede reenviar una `idempotencyKey`.
+
+## API pública
+
+El subpath `@vinkius/connect/workers-ai` exporta:
+
+```typescript
+interface WorkersAITool {
+  name: string;
+  description: string;
+  parameters: JSONSchema;
+  function: (args: Record<string, unknown>) => Promise<string>;
+}
+
+function toWorkersAITools(capabilities: readonly Capability[]): WorkersAITool[];
+```
+
+## Relacionado
+
+- Compara [todos los formatos y modos de retorno de los adaptadores](/es/adapters/overview).
+- Consulta las referencias de [`CapabilitySet`](/es/reference/client#capabilityset) y [`Capability`](/es/reference/client#capability).
+- Gestiona la ejecución directa con [Manejo de errores](/es/guides/error-handling).

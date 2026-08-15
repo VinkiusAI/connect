@@ -1,0 +1,114 @@
+---
+title: Vue d’ensemble des adaptateurs
+description: Choisissez un adaptateur selon le format des outils, le modèle de dispatch et le résultat d’exécution.
+---
+
+Les adaptateurs convertissent le `CapabilitySet` d’un utilisateur à la frontière entre Vinkius Connect et le runtime de votre modèle ou agent. Ils ne récupèrent pas les capacités et n’exécutent pas de modèle.
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+
+const vinkius = new Vinkius({
+  appId: 'vk_app_replace_me',
+  apiKey: 'vk_app_sk_replace_me',
+});
+
+const capabilities = await vinkius.user('user_123').capabilities();
+```
+
+`capabilities` étend `Array<Capability>`. Chaque capacité contient un nom d’affichage, un nom brut de connecteur, une description, un JSON Schema d’entrée, une identité de connexion et une méthode `execute()`. Transmettez ce même tableau à un adaptateur à l’endroit où votre application expose les outils à un runtime.
+
+## Choisir un adaptateur
+
+| Stack | Sous-chemin public | Format converti | Fonction de dispatch | Retour d’exécution | Perte d’informations |
+| --- | --- | --- | --- | --- | --- |
+| [OpenAI Chat Completions](/fr/adapters/openai) | `@vinkius/connect/openai` | `OpenAIFunctionTool[]` | `runOpenAIToolCall` par nom d’affichage | `CapabilityResult` | Aucune |
+| [OpenAI Agents](/fr/adapters/openai-agents) | `@vinkius/connect/openai-agents` | `T[]` issu d’une fabrique `tool` injectée | Callback `execute` lié | `string` | Perd `isError` et `content[].type` |
+| [Anthropic Messages](/fr/adapters/anthropic) | `@vinkius/connect/anthropic` | `AnthropicTool[]` avec `input_schema` | `runAnthropicToolUse` par nom d’affichage | `CapabilityResult` | Aucune |
+| [Vercel AI SDK](/fr/adapters/ai-sdk) | `@vinkius/connect/ai-sdk` | `Record<string, AISDKTool>` indexé par nom d’affichage | Callback `execute` lié | `CapabilityResult` | Aucune ; les clés dupliquées remplacent les outils précédents |
+| [Google Gemini](/fr/adapters/gemini) | `@vinkius/connect/gemini` | `GeminiFunctionDeclaration[]` | `runGeminiFunctionCall` par nom d’affichage | `CapabilityResult` | Aucune |
+| [LangChain.js](/fr/adapters/langchain) | `@vinkius/connect/langchain` | `T[]` issu d’une fabrique `tool` injectée | Callback de fonction lié | `string` | Perd `isError` et `content[].type` |
+| [LlamaIndex.TS](/fr/adapters/llamaindex) | `@vinkius/connect/llamaindex` | `T[]` issu d’une fabrique `tool` injectée | Callback de fonction lié | `string` | Perd `isError` et `content[].type` |
+| [Cloudflare Workers AI](/fr/adapters/workers-ai) | `@vinkius/connect/workers-ai` | `WorkersAITool[]` avec une `function` liée | Callback `function` lié | `string` | Perd `isError` et `content[].type` |
+| [JSON Schema / runtime personnalisé](/fr/adapters/json-schema) | `@vinkius/connect/json-schema` | `JSONSchemaTool[]` | `executeByName` par nom d’affichage ou nom brut | `CapabilityResult` | Aucune ; la correspondance sur le nom brut peut être ambiguë |
+
+Choisissez un adaptateur de fournisseur lorsque votre application reçoit un objet d’appel du fournisseur et le dispatche. Choisissez un adaptateur à fabrique lorsqu’un framework construit ses propres objets d’outil. Choisissez JSON Schema lorsque vous maîtrisez le transport et avez besoin de définitions sans enveloppe de framework.
+
+## Règles de conversion
+
+Chaque convertisseur accepte `readonly Capability[]` et peut donc recevoir directement un `CapabilitySet`. Les convertisseurs copient :
+
+- `capability.name` dans le nom d’outil exposé ;
+- `capability.description` dans la description de l’outil ;
+- `capability.inputSchema` dans le champ de schéma propre à l’adaptateur.
+
+Un schéma est conservé lorsqu’il s’agit d’un objet non vide. Un schéma absent, vide, qui n’est pas un objet ou qui est autrement falsy à l’exécution est normalisé en :
+
+```json
+{ "type": "object", "properties": {} }
+```
+
+Les adaptateurs ne valident ni le JSON Schema, ni les arguments, ni les règles de nommage propres aux fournisseurs.
+
+## Noms et correspondances
+
+Par défaut, le nom d’affichage vaut `${connector}__${rawName}`. Par exemple, le nom brut `create_issue` du connecteur `github` devient `github__create_issue`.
+
+OpenAI, Anthropic et Gemini effectuent le dispatch uniquement selon le nom d’affichage émis lors de la conversion. Leur recherche dans le tableau renvoie la première capacité correspondante lorsque des noms d’affichage sont dupliqués. L’AI SDK renvoie un `Record` ; l’affectation d’un nom d’affichage dupliqué remplace l’entrée précédente par la suivante.
+
+`executeByName` de l’adaptateur JSON Schema accepte les noms d’affichage ou bruts. Il renvoie le premier élément du tableau qui correspond à l’une de ces formes. Un nom brut partagé par plusieurs connecteurs est donc ambigu ; préférez le nom d’affichage avec espace de noms.
+
+## Exécution et erreurs
+
+Les exécutions OpenAI, Anthropic, Gemini, JSON Schema et AI SDK conservent le résultat complet :
+
+```typescript
+interface CapabilityResult {
+  content: Array<{ type: string; text: string }>;
+  isError: boolean;
+}
+```
+
+`isError: true` est un résultat de capacité, et non une exception. Cependant, les fonctions de dispatch explicites lèvent une simple `Error` pour un nom inconnu, et les exceptions provenant de l’exécution d’une capacité continuent de rejeter la promesse.
+
+OpenAI Agents, LangChain, LlamaIndex et Workers AI joignent au contraire `content[].text` avec `\n`. Le contrat de leur callback renvoie `string` ; `isError` et le `type` de chaque partie de contenu ne sont donc plus disponibles après la conversion.
+
+Les fonctions de dispatch et les callbacks liés des adaptateurs appellent `capability.execute(args)` sans `ExecuteOptions`. Ils ne peuvent pas recevoir d’`idempotencyKey`. Appelez directement la `Capability` sélectionnée lorsque vous en avez besoin :
+
+```typescript
+const firstCapability = capabilities[0];
+
+if (firstCapability) {
+  const result = await firstCapability.execute(
+    {},
+    {
+      idempotencyKey: 'request_123',
+    },
+  );
+  console.log(result.content, result.isError);
+}
+```
+
+## Limites du package
+
+Le package publie explicitement les sous-chemins d’adaptateur suivants :
+
+```text
+@vinkius/connect/openai
+@vinkius/connect/openai-agents
+@vinkius/connect/anthropic
+@vinkius/connect/ai-sdk
+@vinkius/connect/gemini
+@vinkius/connect/langchain
+@vinkius/connect/llamaindex
+@vinkius/connect/workers-ai
+@vinkius/connect/json-schema
+```
+
+`@vinkius/connect` ne déclare aucune dépendance d’exécution ni peer dependency. Les adaptateurs au format des fournisseurs utilisent des types structurels locaux ; les adaptateurs à fabrique reçoivent une fonction de votre application. Cela décrit la forme émise, et non la compatibilité avec toutes les versions d’un framework externe. Vérifiez la forme attendue par la version installée dans votre application.
+
+## Étapes suivantes
+
+- Ouvrez dans le tableau ci-dessus la page de l’adaptateur qui correspond à votre runtime.
+- Consultez les références de [`CapabilitySet`](/fr/reference/client#capabilityset) et de [`Capability`](/fr/reference/client#capability).
+- Distinguez les échecs renvoyés des exceptions levées avec la [gestion des erreurs](/fr/guides/error-handling).

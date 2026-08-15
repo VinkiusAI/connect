@@ -1,0 +1,22 @@
+{/* Inlined in the document head to set dark mode before first paint. */}
+<script is:inline>
+  (() => {
+    let storedTheme = null;
+    try {
+      storedTheme = localStorage.getItem('starlight-theme');
+    } catch {}
+
+    const theme = storedTheme === 'light' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = theme;
+
+    // Keep the public Starlight global available for component compatibility,
+    // while deliberately supporting only explicit dark and light themes.
+    window.StarlightThemeProvider = {
+      updatePickers(nextTheme = theme) {
+        const resolvedTheme = nextTheme === 'light' ? 'light' : 'dark';
+        document.documentElement.dataset.theme = resolvedTheme;
+        document.querySelectorAll('vk-theme-toggle').forEach((toggle) => toggle.sync?.());
+      },
+    };
+  })();
+</script>

@@ -1,0 +1,21 @@
+---
+const { siteTitleHref } = Astro.locals.starlightRoute;
+---
+
+<a
+  href={siteTitleHref}
+  class="flex w-[149px] items-center"
+  aria-label="Vinkius Connect"
+>
+  <img
+    src="https://assets.vinkius.com/vk/logo-black-min.png"
+    alt="Vinkius"
+    title="Vinkius"
+    class="h-7 w-auto object-contain"
+    width="149"
+    height="28"
+    loading="eager"
+    decoding="async"
+    fetchpriority="high"
+  />
+</a>

@@ -158,7 +158,7 @@ const vinkius = new Vinkius({
 const capabilities = await vinkius.user('alice_123').capabilities();
 
 const completion = await openai.chat.completions.create({
-  model: 'gpt-4o',
+  model: 'your-model',
   messages: [{ role: 'user', content: 'Open a GitHub issue titled "Ship it"' }],
   tools: toOpenAITools(capabilities),
 });
@@ -245,7 +245,7 @@ of its own factories, you inject it — no peer dependency, no version coupling.
 | -------------------------------- | -------------------------------- | ---------------------------------------- |
 | OpenAI (chat completions)        | `@vinkius/connect/openai`        | `toOpenAITools`, `runOpenAIToolCall`     |
 | OpenAI Agents (`@openai/agents`) | `@vinkius/connect/openai-agents` | `toOpenAIAgentsTools` (inject `tool`)    |
-| Anthropic (Messages)             | `@vinkius/connect/anthropic`     | `toAnthropicTools`                       |
+| Anthropic (Messages)             | `@vinkius/connect/anthropic`     | `toAnthropicTools`, `runAnthropicToolUse` |
 | Google Gemini                    | `@vinkius/connect/gemini`        | `toGeminiTools`, `runGeminiFunctionCall` |
 | Vercel AI SDK                    | `@vinkius/connect/ai-sdk`        | `toAISDKTools` (inject `jsonSchema`)     |
 | LangChain.js                     | `@vinkius/connect/langchain`     | `toLangChainTools` (inject `tool`)       |
@@ -353,7 +353,7 @@ import { runWithTools } from '@cloudflare/ai-utils';
 import { toWorkersAITools } from '@vinkius/connect/workers-ai';
 
 const capabilities = await vinkius.user('alice_123').capabilities();
-const res = await runWithTools(env.AI, '@hf/nousresearch/hermes-2-pro-mistral-7b', {
+const res = await runWithTools(env.AI, 'your-model', {
   messages,
   tools: toWorkersAITools(capabilities),
 });

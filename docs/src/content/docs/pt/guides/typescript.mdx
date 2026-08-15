@@ -1,0 +1,226 @@
+---
+title: Modele as fronteiras do SDK com TypeScript
+description: Tipifique a configuração do cliente, restrinja falhas unknown, represente resultados de capacidades e adapte JSON Schemas de runtime sem suposições inseguras.
+---
+
+O pacote inclui declarações para a API raiz e para cada subpath de adapter. Os tipos estáticos descrevem os formatos de clientes e recursos, enquanto os campos de credenciais dos conectores e os schemas dos argumentos das capacidades permanecem dados de runtime.
+
+## Tipifique a configuração do cliente antes da construção
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+import type { VinkiusOptions } from '@vinkius/connect';
+
+const options = {
+  appId: process.env.VINKIUS_APP_ID!,
+  apiKey: process.env.VINKIUS_APP_KEY!,
+  timeoutMs: 20_000,
+  maxRetries: 2,
+  hooks: {
+    onResponse: ({ status, requestId }) => {
+      console.debug({ status, requestId });
+    },
+  },
+} satisfies VinkiusOptions;
+
+export const vinkius = new Vinkius(options);
+```
+
+`satisfies` verifica os nomes das propriedades e os argumentos dos callbacks sem ampliar o objeto para `VinkiusOptions` antes que ele chegue ao construtor.
+
+## Importe contratos públicos da raiz
+
+```typescript
+import {
+  Capability,
+  CapabilitySet,
+  ValidationError,
+  Vinkius,
+  VinkiusError,
+} from '@vinkius/connect';
+
+import type {
+  CapabilityQuery,
+  CapabilityResult,
+  ConnectorStatus,
+  CredentialSchema,
+  CredentialStatus,
+  ExecuteOptions,
+  JSONSchema,
+  RequestOptions,
+} from '@vinkius/connect';
+```
+
+Classes e erros são valores de runtime, então importe-os normalmente ao usar `new` ou `instanceof`. Interfaces e aliases devem usar `import type` quando sua configuração do TypeScript preserva imports.
+
+## Mantenha explícita a consulta de capacidades em runtime
+
+```typescript
+import type { Capability, CapabilityResult } from '@vinkius/connect';
+
+async function executeIssue(
+  externalId: string,
+  operationId: string,
+): Promise<CapabilityResult> {
+  const query = {
+    include: ['github'],
+  } satisfies CapabilityQuery;
+
+  const capabilities = await vinkius.user(externalId).capabilities(query);
+  const capability: Capability | undefined =
+    capabilities.findCapability('github__create_issue');
+
+  if (!capability) {
+    throw new Error('GitHub create_issue is not available for this user');
+  }
+
+  return capability.execute(
+    { owner: 'acme', repo: 'product', title: 'Document the SDK' },
+    { idempotencyKey: `create-issue:${operationId}` },
+  );
+}
+```
+
+A disponibilidade da capacidade depende do usuário e da resposta do serviço, portanto a consulta retorna `Capability | undefined`. Não esconda essa ramificação com uma asserção de valor não nulo.
+
+## Represente os dois resultados de execução
+
+```typescript
+interface CompletedAction {
+  kind: 'completed';
+  text: string;
+}
+
+interface FailedAction {
+  kind: 'capability-error';
+  text: string;
+}
+
+type ActionOutcome = CompletedAction | FailedAction;
+
+function mapResult(result: CapabilityResult): ActionOutcome {
+  const text = result.content.map((part) => part.text).join('\n');
+  return result.isError
+    ? { kind: 'capability-error', text }
+    : { kind: 'completed', text };
+}
+```
+
+`isError` é um booleano, não um literal discriminante no tipo do SDK; portanto, mapeie-o para sua própria união quando o código posterior se beneficiar de verificações exaustivas.
+
+## Restrinja valores lançados a partir de `unknown`
+
+```typescript
+import {
+  RateLimitError,
+  ValidationError,
+  VinkiusError,
+} from '@vinkius/connect';
+
+type RequestFailure =
+  | { kind: 'validation'; fields: unknown }
+  | { kind: 'rate-limit'; retryAfterMs?: number }
+  | { kind: 'sdk'; code: string; status: number; requestId?: string };
+
+function classifyFailure(error: unknown): RequestFailure | undefined {
+  if (error instanceof ValidationError) {
+    return { kind: 'validation', fields: error.errors };
+  }
+
+  if (error instanceof RateLimitError) {
+    return {
+      kind: 'rate-limit',
+      ...(error.retryAfterMs !== undefined
+        ? { retryAfterMs: error.retryAfterMs }
+        : {}),
+    };
+  }
+
+  if (error instanceof VinkiusError) {
+    return {
+      kind: 'sdk',
+      code: error.code,
+      status: error.status,
+      ...(error.requestId ? { requestId: error.requestId } : {}),
+    };
+  }
+
+  return undefined;
+}
+```
+
+Mantenha uma ramificação para valores desconhecidos. Dispatchers de adapters, hooks da aplicação e alguns momentos de cancelamento podem lançar valores fora da hierarquia de `VinkiusError`.
+
+## Trate schemas de credenciais e capacidades como contratos de runtime
+
+```typescript
+function requiredCredentialKeys(schema: CredentialSchema): string[] {
+  return Object.entries(schema)
+    .filter(([, field]) => field.required === true)
+    .map(([key]) => key);
+}
+
+function capabilitySchema(capability: Capability): JSONSchema {
+  return capability.inputSchema;
+}
+```
+
+`CredentialSchema` tem descritores de campos tipificados. `JSONSchema` é intencionalmente `Record<string, unknown>` porque os schemas dos conectores variam. Valide-o com a biblioteca JSON Schema escolhida pela sua aplicação antes de tratar argumentos de ferramentas como um tipo específico do domínio.
+
+Evite converter diretamente saídas arbitrárias do modelo:
+
+```typescript
+// Evite: a conversão não executa validação em runtime.
+const issue = modelArgs as { owner: string; repo: string; title: string };
+```
+
+Em vez disso, valide `modelArgs` em relação a `capability.inputSchema` e depois mapeie o valor validado para o tipo da sua aplicação.
+
+## Tipifique os controles de requisição separadamente
+
+```typescript
+const requestOptions: RequestOptions = {
+  signal: request.signal,
+};
+
+const executeOptions: ExecuteOptions = {
+  signal: request.signal,
+  idempotencyKey: `operation:${operationId}`,
+};
+```
+
+Todo método que faz requisições aceita `signal`. Somente a execução de capacidades acrescenta `idempotencyKey`. Os helpers de despacho dos adapters não aceitam `ExecuteOptions`, embora suas funções de execução retornadas ou vinculadas sejam tipificadas.
+
+## Preserve os tipos de retorno das fábricas nos adapters
+
+Adapters de fábrica são genéricos e retornam o que a fábrica injetada criar:
+
+```typescript
+import { toLangChainTools } from '@vinkius/connect/langchain';
+import type { JSONSchema } from '@vinkius/connect';
+
+interface AppTool {
+  name: string;
+  run(input: Record<string, unknown>): Promise<string>;
+}
+
+const toolFactory = (
+  fn: (input: Record<string, unknown>) => Promise<string>,
+  config: { name: string; description: string; schema: JSONSchema },
+): AppTool => ({
+  name: config.name,
+  run: fn,
+});
+
+const tools: AppTool[] = toLangChainTools(capabilities, {
+  tool: toolFactory,
+});
+```
+
+Este exemplo usa apenas o contrato estrutural do adapter. Teste uma fábrica real do framework em relação à versão instalada pela sua aplicação.
+
+## Próximos passos
+
+- [Explore os exports raiz e os tipos de recursos](/pt/reference/client)
+- [Examine o comportamento das capacidades em runtime](/pt/concepts/capabilities)
+- [Compare os tipos de retorno dos adapters](/pt/adapters/overview)

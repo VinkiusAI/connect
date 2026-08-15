@@ -1,0 +1,103 @@
+---
+title: Adaptateur LlamaIndex
+description: Construisez des outils au format LlamaIndex au moyen d’une fabrique injectée et d’un callback qui renvoie une chaîne.
+---
+
+Utilisez cet adaptateur lorsque votre application possède une fabrique `tool(fn, config)` conforme au contrat structurel ci-dessous. L’adaptateur fournit une fonction liée et un objet de métadonnées par capacité.
+
+## Convertir et exécuter
+
+L’exemple définit une fabrique locale et ne présume donc d’aucune API ou version de package externe. Remplacez-la par la fabrique de votre framework lorsque les signatures correspondent.
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+import { toLlamaIndexTools, type LlamaIndexToolFactory } from '@vinkius/connect/llamaindex';
+
+type ExampleTool = {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  call: (input: Record<string, unknown>) => Promise<string>;
+};
+
+const tool: LlamaIndexToolFactory<ExampleTool> = (fn, config) => ({
+  ...config,
+  call: fn,
+});
+
+const vinkius = new Vinkius({
+  appId: 'vk_app_replace_me',
+  apiKey: 'vk_app_sk_replace_me',
+});
+const capabilities = await vinkius.user('user_123').capabilities();
+const tools = toLlamaIndexTools(capabilities, { tool });
+
+const firstTool = tools[0];
+if (firstTool) {
+  const text = await firstTool.call({});
+  console.log(text);
+}
+```
+
+Le convertisseur renvoie le `T[]` créé par la fabrique injectée et n’importe aucun code d’exécution LlamaIndex.
+
+## Contrat de la fabrique
+
+Pour chaque capacité, l’adaptateur appelle :
+
+```typescript
+tool(async (input) => string, {
+  name: capability.name,
+  description: capability.description,
+  parameters: capability.inputSchema,
+});
+```
+
+`parameters` reçoit un JSON Schema brut. Un objet non vide est conservé ; une valeur vide, absente, falsy ou qui n’est pas un objet à l’exécution devient `{ type: 'object', properties: {} }`. Aucune conversion vers une bibliothèque de schémas ni aucune validation n’a lieu.
+
+La sortie n’est structurellement compatible qu’avec les versions de fabrique qui acceptent cette signature. Le package Connect n’installe ni ne fixe de version de framework externe.
+
+## Nommage et exécution
+
+Les métadonnées reçoivent le nom d’affichage, qui vaut par défaut `${connector}__${rawName}`. Le callback est déjà lié à une capacité et n’effectue aucune recherche de nom. Les noms d’affichage dupliqués restent des entrées dupliquées du tableau ; l’adaptateur ne décide pas comment un agent en aval les traite.
+
+L’exécution joint les parties textuelles du résultat dans l’ordre :
+
+```typescript
+result.content.map((part) => part.text).join('\n');
+```
+
+Un tableau de contenu vide produit une chaîne vide. Les exceptions d’exécution continuent de rejeter la promesse.
+
+## Perte d’informations et limites
+
+Le callback renvoie `Promise<string>`. Il ne conserve ni `CapabilityResult.isError`, ni `content[].type`, ni les frontières typées entre les parties du contenu.
+
+Exécutez la `Capability` d’origine lorsque ces champs sont importants. Le callback accepte uniquement l’enregistrement d’entrée ; il ne peut donc recevoir `ExecuteOptions` ni une `idempotencyKey`.
+
+## API publique
+
+Le sous-chemin `@vinkius/connect/llamaindex` exporte :
+
+```typescript
+type LlamaIndexToolFactory<T> = (
+  fn: (input: Record<string, unknown>) => Promise<string>,
+  config: {
+    name: string;
+    description: string;
+    parameters: JSONSchema;
+  },
+) => T;
+
+interface ToLlamaIndexOptions<T> {
+  tool: LlamaIndexToolFactory<T>;
+}
+
+function toLlamaIndexTools<T>(capabilities: readonly Capability[], options: ToLlamaIndexOptions<T>): T[];
+```
+
+## Voir aussi
+
+- Comparez [tous les modes de retour des adaptateurs](/fr/adapters/overview).
+- Consultez les références de [`CapabilitySet`](/fr/reference/client#capabilityset) et de [`Capability`](/fr/reference/client#capability).
+- Gérez l’exécution directe avec la [gestion des erreurs](/fr/guides/error-handling).

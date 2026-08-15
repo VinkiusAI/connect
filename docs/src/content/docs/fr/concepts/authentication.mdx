@@ -1,0 +1,117 @@
+---
+title: Authentifier l’application et associer la portée utilisateur
+description: Conservez les identifiants de l’application sur le serveur, déduisez externalId d’une identité fiable et écrivez les données d’authentification du connecteur sans relire leurs valeurs.
+---
+
+Le SDK authentifie votre backend avec un App ID et une Application Key. Il n’authentifie pas vos utilisateurs finaux. Votre application doit vérifier l’appelant, autoriser l’opération demandée et déduire l’`externalId` utilisé dans chaque requête limitée à un utilisateur.
+
+## Conserver la clé d’application derrière une frontière serveur
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+
+export const vinkius = new Vinkius({
+  appId: process.env.VINKIUS_APP_ID!,
+  apiKey: process.env.VINKIUS_APP_KEY!,
+});
+```
+
+En principe, les requêtes transmettent l’Application Key comme autorisation de type Bearer et l’App ID dans un en-tête d’application. N’initialisez pas ce client dans du code de navigateur et ne renvoyez aucune de ces deux valeurs à un client.
+
+Le SDK n’expose pas d’API pour une interface OAuth hébergée ou de configuration des connecteurs. Si un connecteur exige des données d’authentification, votre application les recueille dans son propre flux serveur authentifié et les envoie avec `credentials.set()`.
+
+## Déduire `externalId` de l’état authentifié
+
+```typescript
+interface Session {
+  userId: string;
+}
+
+async function listActions(session: Session) {
+  return vinkius.user(session.userId).capabilities();
+}
+```
+
+Utilisez votre propre identifiant utilisateur stable, de préférence opaque. Le SDK refuse les valeurs qui :
+
+- sont vides ou dépassent 255 caractères ;
+- contiennent un espace, `/` ou `\` ;
+- commencent par `vk_app_user_`, qui désigne un identifiant interne plutôt que le vôtre.
+
+`user(externalId)` renvoie un objet intermédiaire et n’effectue aucune requête. `ensure(metadata)` est facultatif :
+
+```typescript
+await vinkius.user(session.userId).ensure({ plan: 'team' });
+```
+
+L’API traite cet appel comme une création ou mise à jour idempotente. Ne placez aucun secret dans les métadonnées ; elles ne constituent pas un stockage de données d’authentification.
+
+## Refuser une portée utilisateur choisie par le client
+
+Ce point d’accès est vulnérable, car le corps de la requête choisit l’utilisateur :
+
+```typescript
+// Do not use this pattern without an authorization check.
+const { externalId } = await request.json();
+const capabilities = await vinkius.user(externalId).capabilities();
+```
+
+Associez la portée avant de construire l’objet :
+
+```typescript
+async function handleCapabilities(request: Request) {
+  const session = await requireSession(request); // application code
+  const capabilities = await vinkius.user(session.userId).capabilities();
+
+  return Response.json(
+    capabilities.map(({ name, description, inputSchema }) => ({
+      name,
+      description,
+      inputSchema,
+    })),
+  );
+}
+```
+
+La recherche de la session constitue votre frontière d’autorisation. Un App ID et une clé autorisent l’application, pas un utilisateur précis du navigateur.
+
+## Lire le schéma d’authentification avant de recueillir les valeurs
+
+`credentials.schema()` lit les métadonnées du connecteur dans le catalogue. Une connexion utilisateur existante n’est pas nécessaire :
+
+```typescript
+const github = vinkius.user(session.userId).connector('github');
+const schema = await github.credentials.schema();
+```
+
+Utilisez le schéma pour déterminer les champs que votre formulaire serveur doit accepter. Ne supposez pas que tous les connecteurs utilisent des jetons ou les mêmes noms de clés.
+
+## Écrire les données d’authentification uniquement après avoir créé la connexion
+
+```typescript
+await github.connect();
+const state = await github.credentials.set({
+  GITHUB_TOKEN: submittedToken,
+});
+
+console.log(state.configured.GITHUB_TOKEN);
+```
+
+`credentials.status()` et `credentials.set()` exigent une connexion ; sinon, elles lèvent `ConnectorNotConnectedError`. Leurs réponses contiennent le schéma et une table des clés configurées, mais pas les valeurs d’authentification enregistrées :
+
+```typescript
+const state = await github.credentials.status();
+// state.configured: Record<string, boolean>
+```
+
+Traitez les valeurs soumises comme des secrets dans votre propre code. Le masquage destiné à l’observabilité du transport couvre une liste fixe de noms de champs connus, mais ne peut pas reconnaître tous les noms personnalisés que vous pourriez consigner ailleurs.
+
+## Séparer les environnements de l’application
+
+Utilisez des App ID et des clés différents pour le développement, la préproduction et le trafic réel. Cette séparation isole les utilisateurs, l’état des connexions et la rotation des identifiants au niveau de la frontière d’authentification de l’application.
+
+## Étapes suivantes
+
+- [Mettre en œuvre une route mutualisée](/fr/guides/multi-tenant)
+- [Construire la configuration du connecteur à partir du schéma et du statut](/fr/concepts/connectors)
+- [Gérer les erreurs d’authentification et de validation](/fr/guides/error-handling)

@@ -1,0 +1,111 @@
+---
+title: Adaptador JSON Schema
+description: Produce definiciones de herramientas JSON Schema sin framework y despacha por nombre de visualización o nombre en bruto.
+---
+
+Usa este adaptador cuando tu aplicación controle el transporte de herramientas y el protocolo de despacho. Su salida son metadatos JSON Schema simples sin un wrapper de proveedor o framework.
+
+## Convertir y despachar
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+import { executeByName, toJSONSchemaTools } from '@vinkius/connect/json-schema';
+
+const vinkius = new Vinkius({
+  appId: 'vk_app_replace_me',
+  apiKey: 'vk_app_sk_replace_me',
+});
+const capabilities = await vinkius.user('user_123').capabilities();
+const definitions = toJSONSchemaTools(capabilities);
+
+const firstDefinition = definitions[0];
+if (firstDefinition) {
+  const result = await executeByName(capabilities, firstDefinition.name, {});
+
+  console.log(result.content, result.isError);
+}
+```
+
+Puedes serializar `definitions`, mapearlas a otro protocolo o almacenarlas como metadatos de runtime. El adaptador no las envía a ningún sitio.
+
+## Formato convertido
+
+`toJSONSchemaTools` devuelve una definición por capacidad:
+
+```typescript
+{
+  name: capability.name,
+  description: capability.description,
+  parameters: capability.inputSchema,
+}
+```
+
+Se garantiza que `parameters` sea un objeto no vacío. Un esquema vacío, ausente, falsy o que no sea un objeto observado en runtime se sustituye por:
+
+```json
+{ "type": "object", "properties": {} }
+```
+
+No se incluye validación, transporte, cliente de modelo ni wrapper de framework.
+
+## Nombres y despacho por primera coincidencia
+
+`executeByName(capabilities, name, args?)` recorre el array desde el principio. Un candidato coincide cuando se cumple una de estas condiciones:
+
+```typescript
+candidate.name === name || candidate.rawName === name;
+```
+
+Prefiere el nombre de visualización, que por defecto es `${connector}__${rawName}`. Los nombres en bruto pueden repetirse entre conectores. Si dos capacidades exponen el mismo nombre en bruto, se ejecuta el primer elemento coincidente del array. La misma regla de primera coincidencia se aplica a cualquier nombre de visualización duplicado.
+
+Si falta `args`, se usa `{}`. Los argumentos no se analizan ni se validan.
+
+Un nombre desconocido lanza un `Error("Unknown capability: …")` simple.
+
+## Resultados y límites
+
+`executeByName` conserva el `CapabilityResult` completo, incluidos `content[].type` e `isError`. Por lo tanto, una capacidad puede resolverse con `isError: true`; las excepciones de ejecución siguen rechazando la promesa.
+
+El helper no acepta `ExecuteOptions` y no puede reenviar una `idempotencyKey`. Cuando necesites idempotencia, selecciona la capacidad y llama:
+
+```typescript
+const firstCapability = capabilities[0];
+
+if (firstCapability) {
+  const result = await firstCapability.execute(
+    {},
+    {
+      idempotencyKey: 'request_123',
+    },
+  );
+  console.log(result.content, result.isError);
+}
+```
+
+Este adaptador es la salida sin framework. No afirma compatibilidad con un proveedor externo simplemente porque ese proveedor acepte alguna forma de JSON Schema.
+
+## API pública
+
+El subpath `@vinkius/connect/json-schema` exporta:
+
+```typescript
+interface JSONSchemaTool {
+  name: string;
+  description: string;
+  parameters: JSONSchema;
+}
+
+function toJSONSchemaTools(capabilities: readonly Capability[]): JSONSchemaTool[];
+
+function executeByName(
+  capabilities: readonly Capability[],
+  name: string,
+  args?: Record<string, unknown>,
+): Promise<CapabilityResult>;
+```
+
+## Relacionado
+
+- Compara [los adaptadores de proveedores y frameworks](/es/adapters/overview).
+- Configura los nombres de visualización mediante las [opciones del cliente](/es/reference/client#cree-un-cliente).
+- Gestiona los fallos de resultado y las excepciones con [Manejo de errores](/es/guides/error-handling).

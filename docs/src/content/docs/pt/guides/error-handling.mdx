@@ -1,0 +1,188 @@
+---
+title: Trate resultados de execução, erros de requisição e repetições
+description: Separe falhas de capacidades de exceções do SDK, preserve IDs de requisição e repita efeitos colaterais somente com uma chave de idempotência estável.
+---
+
+Uma capacidade pode falhar de duas maneiras diferentes. O conector pode retornar um resultado concluído com `isError: true`, ou o SDK pode lançar porque a configuração, autenticação, validação, cota, transporte ou requisição HTTP falhou. Seu fluxo de controle precisa tratar os dois casos.
+
+## Verifique falhas de capacidade como dados retornados
+
+```typescript
+const result = await capability.execute(args, {
+  idempotencyKey: 'create-issue:operation-8042',
+});
+
+const message = result.content.map((part) => part.text).join('\n');
+
+if (result.isError) {
+  // Retorne o resultado da ferramenta ao modelo ou mapeie-o para uma mensagem da aplicação.
+  console.error('Capability failed:', message);
+} else {
+  console.log('Capability completed:', message);
+}
+```
+
+`isError` não é lançado. Uma troca HTTP bem-sucedida ainda pode produzir uma ação externa com falha — por exemplo, quando o serviço conectado rejeita a operação solicitada.
+
+## Restrinja os erros lançados do mais específico ao mais geral
+
+```typescript
+import {
+  AuthError,
+  ConnectionError,
+  ConnectorNotConnectedError,
+  OverageError,
+  QuotaError,
+  RateLimitError,
+  ValidationError,
+  VinkiusError,
+} from '@vinkius/connect';
+
+async function executeAction() {
+  try {
+    return await capability.execute(args, {
+      idempotencyKey: 'create-issue:operation-8042',
+    });
+  } catch (error: unknown) {
+    if (error instanceof ConnectorNotConnectedError) {
+      return { kind: 'reconnect' as const };
+    }
+
+    if (error instanceof ValidationError) {
+      return { kind: 'invalid-input' as const, fields: error.errors };
+    }
+
+    if (error instanceof AuthError) {
+      return { kind: 'application-auth' as const, requestId: error.requestId };
+    }
+
+    if (error instanceof RateLimitError) {
+      return { kind: 'rate-limit' as const, retryAfterMs: error.retryAfterMs };
+    }
+
+    if (error instanceof QuotaError || error instanceof OverageError) {
+      return { kind: 'plan-limit' as const, upgradeUrl: error.upgradeUrl };
+    }
+
+    if (error instanceof ConnectionError) {
+      return { kind: 'transport' as const, message: error.message };
+    }
+
+    if (error instanceof VinkiusError) {
+      return {
+        kind: 'api' as const,
+        code: error.code,
+        status: error.status,
+        requestId: error.requestId,
+      };
+    }
+
+    throw error;
+  }
+}
+```
+
+Todo `VinkiusError` tem `code`, `status`, `requestId` e `details`. Erros locais e de transporte usam status `0`. `requestId` só está presente quando o servidor fornece um valor.
+
+| Classe de erro | Causa típica | Dados adicionais |
+| --- | --- | --- |
+| `ConfigError` | Opção de cliente ou `externalId` inválido | — |
+| `AuthError` | HTTP `401` ou `403` | — |
+| `NotFoundError` | HTTP `404` | — |
+| `ValidationError` | HTTP `422` | `errors` |
+| `RateLimitError` | HTTP `429` do plano de controle | `retryAfterMs` |
+| `QuotaError` | HTTP `429` de cota da capacidade | `upgradeUrl` |
+| `OverageError` | HTTP `402` | `upgradeUrl` |
+| `ConnectorNotConnectedError` | A operação exige uma conexão | — |
+| `ConnectionError` | Falha de rede, timeout ou cancelamento do chamador durante `fetch` | `cause` quando disponível |
+| `VinkiusError` | Outra resposta sem sucesso | `details` |
+
+`NotImplementedError` é exportado, mas não foi observado nenhum ponto de chamada ativo do SDK que o lance. Não baseie o fluxo de controle normal da aplicação nele.
+
+## Saiba quais requisições o SDK repete
+
+O cliente padrão permite duas repetições depois da tentativa inicial. Uma requisição só é repetida quando as duas condições são atendidas:
+
+1. A falha é um erro de rede, timeout ou HTTP `429`, `502`, `503` ou `504`.
+2. A operação é classificada como repetível.
+
+As operações repetíveis são:
+
+- todas as requisições `GET`, `PUT` e `DELETE`;
+- criação/upsert de usuário;
+- obtenção ou criação de conexão;
+- execução de capacidade quando `idempotencyKey` é fornecida.
+
+`Retry-After` é aceito em segundos ou como uma data HTTP e limitado pelo teto de backoff de 4 segundos do transporte. Cada tentativa tem seu próprio orçamento de `timeoutMs`.
+
+O transporte classifica todas as respostas `429` antes de mapear o erro final, portanto uma operação idempotente pode repetir uma resposta de cota antes de, por fim, lançar `QuotaError`.
+
+## Gere e valide chaves de execução na sua aplicação
+
+```typescript
+function executionKey(kind: string, operationId: string): string {
+  if (!kind || !operationId) {
+    throw new Error('kind and operationId are required');
+  }
+  return `${kind}:${operationId}`;
+}
+
+const result = await capability.execute(args, {
+  idempotencyKey: executionKey('create-issue', operationId),
+});
+```
+
+Uma chave identifica um único efeito colateral lógico:
+
+- reutilize-a para repetições dessa mesma operação;
+- use uma chave nova para uma nova operação;
+- nunca use uma string vazia;
+- armazene o ID da operação quando uma requisição puder sobreviver à conexão HTTP de entrada.
+
+O SDK não valida se a chave está vazia. Como a verificação de repetição da execução testa `undefined`, enquanto o cabeçalho só é enviado para um valor truthy, `''` pode habilitar a repetição sem enviar `Idempotency-Key`.
+
+Sem uma chave, a execução recebe uma tentativa de transporte. Se essa tentativa atingir o timeout, a ação externa ainda pode ter sido concluída. Reconcilie o estado antes de emitir uma nova operação.
+
+## Não dependa do despacho do adapter para opções de execução
+
+Helpers de dispatcher e funções dos adapters vinculadas por fábricas chamam `capability.execute(args)` sem `signal` ou `idempotencyKey`. Para um efeito colateral cancelável ou repetível, resolva a capacidade original e chame-a diretamente:
+
+```typescript
+const selected = capabilities.findCapability(returnedToolName);
+if (!selected) throw new Error(`Unknown capability: ${returnedToolName}`);
+
+const result = await selected.execute(returnedArgs, {
+  signal: request.signal,
+  idempotencyKey: executionKey('model-tool', operationId),
+});
+```
+
+Nomes desconhecidos passados aos dispatchers dos adapters lançam `Error` simples, não `VinkiusError`.
+
+## Registre diagnósticos sem registrar segredos
+
+```typescript
+try {
+  await executeAction();
+} catch (error: unknown) {
+  if (error instanceof VinkiusError) {
+    console.error('Vinkius request failed', {
+      code: error.code,
+      status: error.status,
+      requestId: error.requestId,
+      operationId,
+    });
+  }
+  throw error;
+}
+```
+
+Evite registrar `error.details` sem revisá-lo. Os corpos de resposta dos hooks usam remoção por nomes fixos, mas os detalhes de erro retêm o corpo original interpretado. Não registre indiscriminadamente valores de credenciais, cabeçalhos de autorização nem entradas enviadas a ferramentas.
+
+Callbacks de hooks também podem lançar seus erros originais, e o cancelamento durante o backoff de uma repetição pode propagar diretamente o motivo do sinal. Mantenha uma ramificação final para `unknown` em vez de pressupor que todo valor lançado é um `VinkiusError`.
+
+## Próximos passos
+
+- [Diagnostique falhas por sintoma](/pt/guides/troubleshooting)
+- [Use receitas de integração focadas](/pt/guides/recipes)
+- [Revise a referência completa de erros](/pt/reference/client#erros-e-ids-de-requisição)

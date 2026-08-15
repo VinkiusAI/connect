@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://connect.vinkius.com/sitemap-index.xml

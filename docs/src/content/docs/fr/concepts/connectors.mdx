@@ -1,0 +1,122 @@
+---
+title: Configurer et inspecter un connecteur utilisateur
+description: Découvrez les champs d’identifiants, créez une connexion limitée à un utilisateur, enregistrez les identifiants, inspectez l’état de préparation et déconnectez le compte.
+---
+
+Un connecteur décrit une intégration du catalogue. Une connexion est ce connecteur configuré pour un utilisateur de l’application. Cette page construit un flux de configuration côté serveur sans présumer du nom des champs d’identifiants.
+
+Le SDK ne comporte ni formulaire d’identifiants hébergé ni API d’interface OAuth. Votre application affiche et autorise l’expérience de configuration, puis appelle les méthodes du connecteur depuis son backend.
+
+## Créer un handle de connecteur paresseux
+
+```typescript
+const user = vinkius.user('alice_123');
+const github = user.connector('github');
+```
+
+Aucune de ces lignes n’envoie de requête. Le handle conserve le contexte utilisateur et le slug pour les opérations ultérieures. Les slugs de connecteur sont transmis tels quels à l’API ; contrairement à `externalId`, le constructeur ne leur applique pas de validateur dédié.
+
+## Lire les champs d’identifiants requis
+
+```typescript
+const schema = await github.credentials.schema();
+
+for (const [key, field] of Object.entries(schema)) {
+  console.log(key, field.type, field.required ?? false);
+}
+```
+
+`schema()` lit les détails du catalogue et fonctionne avant même qu’une connexion existe. Un champ peut comporter des valeurs `type`, `label`, `required`, `group`, `docs_url`, `placeholder` et `allowed`. Utilisez ces descripteurs pour construire ou valider votre propre formulaire.
+
+## Créer la connexion et stocker les valeurs
+
+```typescript
+async function configureConnector(
+  externalId: string,
+  slug: string,
+  values: Record<string, string>,
+) {
+  const connector = vinkius.user(externalId).connector(slug);
+
+  const connection = await connector.connect();
+  const credentialState = await connector.credentials.set(values);
+  const status = await connector.status();
+
+  return {
+    connectionId: connection.id,
+    configured: credentialState.configured,
+    status,
+  };
+}
+```
+
+`connect()` effectue une requête. Selon le contrat de l’API Vinkius, cette opération récupère ou crée la connexion pour l’utilisateur et le connecteur ; le SDK la considère donc comme idempotente lors des nouvelles tentatives après une erreur transitoire. Chaque appel répété effectue néanmoins des entrées-sorties réseau.
+
+Le handle mémorise l’ID de connexion renvoyé. Les appels ultérieurs à `credentials.set()`, `credentials.status()` ou aux `capabilities()` limitées au connecteur sur ce même handle peuvent l’utiliser sans nouvelle recherche.
+
+## Interpréter l’état du connecteur
+
+```typescript
+const status = await github.status();
+```
+
+| État | Condition dérivée | Réponse habituelle de l’application |
+| --- | --- | --- |
+| `not_connected` | Aucune connexion correspondante | Proposer le flux de configuration du connecteur |
+| `needs_credentials` | La connexion est active, mais `ready` vaut false | Recueillir ou remplacer les valeurs requises |
+| `ready` | La connexion est active et `ready` vaut true | Charger les capacités |
+| `disabled` | L’état de la connexion n’est pas actif | Indiquer à l’utilisateur que la connexion ne peut pas s’exécuter actuellement |
+
+`status()` répertorie les connexions et renvoie `not_connected` au lieu de lever une exception lorsqu’il n’en existe aucune. `credentials.status()`, `credentials.set()`, `disconnect()` et les `capabilities()` limitées au connecteur exigent une connexion et peuvent lever `ConnectorNotConnectedError`.
+
+## Les valeurs des identifiants sont en écriture seule
+
+```typescript
+const state = await github.credentials.status();
+
+console.log(state.schema);
+console.log(state.configured); // clé -> booléen
+```
+
+L’API renvoie le schéma et des indicateurs pour les clés configurées, mais pas les valeurs stockées. N’utilisez pas l’état pour tenter de récupérer ou de copier des identifiants. Le service vérifie les valeurs soumises par rapport au schéma du connecteur.
+
+## Répertorier toutes les connexions existantes
+
+```typescript
+const summaries = await user.connectors();
+
+for (const summary of summaries) {
+  console.log(summary.slug, summary.status, summary.connectionId);
+}
+```
+
+Cette liste contient uniquement les connexions existantes et dérive les quatre mêmes états de chaque réponse de connexion.
+
+## Charger des actions ou se déconnecter
+
+```typescript
+const capabilities = await github.capabilities();
+// Utilisez ou convertissez les capacités ici.
+
+await github.disconnect();
+```
+
+`disconnect()` résout l’ID de connexion, supprime la connexion et efface la valeur mémorisée par ce handle après la réussite. Un autre handle possède sa propre valeur mémorisée. Si une connexion est modifiée en dehors d’un handle, un ID précédemment mémorisé peut être obsolète.
+
+## Découvrir les connecteurs dans le catalogue
+
+```typescript
+const page = await vinkius.catalog.list({ page: 1 });
+const detail = await vinkius.catalog.get('github');
+
+console.log(page.data);
+console.log(detail.credential_schema);
+```
+
+`catalog.search(query)` envoie `q` au même endpoint de catalogue. Le filtrage dépend de la prise en charge par le service ; un service qui ignore `q` peut renvoyer la liste non filtrée.
+
+## Étapes suivantes
+
+- [Associer la configuration du connecteur aux utilisateurs authentifiés](/fr/guides/multi-tenant)
+- [Sélectionner et exécuter des capacités](/fr/concepts/capabilities)
+- [Résoudre les problèmes d’état de préparation et d’identifiants](/fr/guides/troubleshooting)

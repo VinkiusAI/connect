@@ -1,0 +1,112 @@
+---
+title: Suivre une capacité de l’objet intermédiaire à la requête HTTP
+description: Découvrez comment l’API fluide délègue aux clients de ressources, achemine les requêtes HTTP, mémorise les identifiants de connexion et renvoie les résultats d’exécution.
+---
+
+Le SDK comporte trois couches : les objets utilisateur et connecteur de l’API fluide, les clients de ressources bas niveau et un transport HTTP unique. Suivre ces couches permet de comprendre quand une ligne de code effectue des entrées-sorties, ce qui est mis en cache et quels échecs peuvent faire l’objet d’une nouvelle tentative.
+
+## Les objets de l’API fluide décrivent la portée
+
+```typescript
+const user = vinkius.user('alice_123');
+const github = user.connector('github');
+```
+
+Ces lignes créent des objets `UserContext` et `Connector` sans contacter l’API. Ces objets conservent le contexte de l’application, l’`externalId` et le slug du connecteur afin que les appels ultérieurs puissent construire une route limitée à l’utilisateur.
+
+Le constructeur n’effectue lui non plus aucune requête. Les entrées-sorties réseau commencent avec des méthodes telles que `ensure()`, `connect()`, `status()`, `schema()`, `capabilities()` et `execute()`.
+
+## Les méthodes de l’API fluide délèguent aux ressources
+
+| Opération de l’API fluide | Client de ressource | Opération HTTP |
+| --- | --- | --- |
+| `user.ensure(metadata)` | `AppUsersClient.create` | `POST /apps/{appId}/users` |
+| `user.connectors()` | `ConnectionsClient.list` | `GET /apps/{appId}/users/{externalId}/mcps` |
+| `connector.connect()` | `ConnectionsClient.create` | `POST .../mcps` |
+| `credentials.schema()` | `CatalogClient.get` | `GET /catalog/mcps/{slug}` |
+| `credentials.status()` | `CredentialsClient.status` | `GET .../mcps/{connectionId}/credentials` |
+| `credentials.set(values)` | `CredentialsClient.set` | `PUT .../mcps/{connectionId}/credentials` |
+| `user.capabilities()` | `AppUsersClient.capabilities` | `GET .../users/{externalId}/tools` |
+| `connector.capabilities()` | `ExecutionClient.list` | `GET .../mcps/{connectionId}/tools` |
+| `capability.execute()` | `ExecutionClient.execute` | `POST .../tools/execute` |
+
+Les composants des chemins sont encodés avant l’envoi des requêtes. Les clients bas niveau sont exportés pour les applications qui ont besoin des structures brutes des ressources ; l’API fluide ajoute la résolution différée, le calcul du statut, la construction des capacités et la table à plat des données d’authentification.
+
+## La construction d’une capacité conserve son routage d’exécution
+
+Le point d’accès agrégé renvoie les données de capacité ainsi que les identifiants du connecteur et de la connexion. Le SDK convertit chaque élément en `Capability` et applique la fonction configurée pour le nom d’affichage :
+
+```typescript
+const capability = capabilities.findCapability('github__create_issue');
+
+console.log(capability?.rawName);      // create_issue
+console.log(capability?.connector);    // github
+console.log(capability?.connectionId); // route for this user's connection
+```
+
+`execute()` envoie `rawName`, les arguments et l’identifiant de connexion conservé. Une capacité étant liée à la portée utilisateur qui l’a produite, ne mettez pas en cache les objets de capacité d’un utilisateur pour la requête d’un autre utilisateur.
+
+## La mémorisation de l’identifiant de connexion est locale à un objet
+
+Un `Connector` résout son identifiant de connexion lorsqu’une opération en a besoin et enregistre le résultat sur cette instance. Réutiliser le même objet peut éviter une nouvelle requête de liste des connexions :
+
+```typescript
+const github = vinkius.user('alice_123').connector('github');
+
+await github.connect();              // response ID is memoized
+await github.credentials.status();   // uses the memoized ID
+await github.capabilities();         // uses the memoized ID
+```
+
+Un objet nouvellement créé possède sa propre valeur mémorisée et le client ne contient aucun cache de connexion commun à toute l’application. Si une connexion est supprimée en dehors de l’objet, un identifiant mémorisé peut devenir obsolète. `disconnect()` efface cette valeur après une suppression réussie.
+
+`ResolverCache` est un utilitaire distinct. `Vinkius` ne l’utilise pas automatiquement pour les utilisateurs, les schémas, les entrées du catalogue ni les identifiants de connexion.
+
+## Le transport ajoute l’authentification de l’application
+
+Chaque requête HTTP transmet l’Application Key comme autorisation de type Bearer et l’App ID dans l’en-tête d’application du SDK. Il s’agit d’identifiants au niveau de l’application ; la portée utilisateur provient de l’`externalId` encodé dans le chemin de la ressource.
+
+Le transport applique également :
+
+- un délai d’attente par tentative, de 30 secondes par défaut ;
+- un `AbortSignal` facultatif de l’appelant, combiné à ce délai ;
+- la sérialisation et l’analyse JSON ;
+- l’extraction de l’identifiant de requête depuis les en-têtes de réponse pris en charge ;
+- la conversion des réponses en erreurs ;
+- une politique de nouvelles tentatives pour les opérations répétables.
+
+## Les nouvelles tentatives dépendent de la méthode et de l’idempotence
+
+Le maximum par défaut correspond à la tentative initiale suivie de deux nouvelles tentatives. Les erreurs réseau, les délais dépassés et les réponses HTTP `429`, `502`, `503` ou `504` sont considérés comme transitoires, mais seules les requêtes répétables sont retentées.
+
+Les méthodes `GET`, `PUT` et `DELETE` sont répétables par défaut. La création d’un utilisateur et celle d’une connexion sont explicitement marquées comme idempotentes, car leurs contrats serveur consistent respectivement à créer ou mettre à jour, et à récupérer ou créer. L’exécution d’une capacité n’est répétable que si `idempotencyKey` est fournie.
+
+Le transport vérifie si la clé d’exécution vaut `undefined`, tandis que l’en-tête n’est envoyé que pour une chaîne évaluée comme vraie. Une chaîne vide peut donc activer une nouvelle tentative sans envoyer l’en-tête. Vérifiez toujours que votre clé est stable et non vide avant d’appeler `execute()`.
+
+Les fonctions d’acheminement des adaptateurs appellent `capability.execute(args)` sans `ExecuteOptions` ; ces exécutions ne transmettent ni clé ni signal de l’appelant et n’effectuent qu’une tentative de transport.
+
+## Les hooks reçoivent une vue limitée et masquée
+
+`onRequest` reçoit la méthode, l’URL et les en-têtes de chaque tentative. Il ne reçoit pas le corps de la requête. Les noms exacts des en-têtes sensibles — autorisation, clé d’idempotence et en-têtes de témoins — sont masqués.
+
+`onResponse` reçoit le statut, l’URL, l’éventuel identifiant de requête et une copie du corps de la réponse. Le masquage utilise une liste fixe de noms de champs exacts, sans tenir compte de la casse, comme `token`, `api_key`, `credentials`, `password` et `client_secret`, jusqu’à une profondeur maximale de six. Il ne déduit pas tous les noms personnalisés susceptibles de contenir un secret, et les URL ne sont pas masquées.
+
+Les fonctions de hook sont synchrones et ne sont pas attendues. Si un hook lève une erreur, celle-ci est propagée telle quelle au lieu d’être convertie en `VinkiusError`.
+
+## Les échecs de résultat et de requête sont différents
+
+```typescript
+const result = await capability.execute(args, { idempotencyKey });
+
+if (result.isError) {
+  // The request completed; the capability reported failure.
+}
+```
+
+Les échecs HTTP, de configuration et la plupart des échecs de transport lèvent une sous-classe de `VinkiusError`. Lorsque le serveur fournit un identifiant de requête, l’erreur contient `requestId`. Les noms inconnus transmis aux fonctions d’acheminement des adaptateurs lèvent une simple `Error`, et non une `VinkiusError`.
+
+## Étapes suivantes
+
+- [Examiner la recherche et le filtrage des capacités](/fr/concepts/capabilities)
+- [Mettre en œuvre les deux voies d’erreur](/fr/guides/error-handling)
+- [Utiliser la référence de l’API bas niveau](/fr/reference/client#clients-bas-niveau)

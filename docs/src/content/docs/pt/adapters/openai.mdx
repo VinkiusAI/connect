@@ -1,0 +1,128 @@
+---
+title: Adaptador para OpenAI
+description: Converta capacidades em ferramentas de função para Chat Completions e despache chamadas de ferramentas concluídas.
+---
+
+Use este adapter quando sua aplicação trocar objetos de ferramentas de função no estilo Chat Completions. Ele emite os campos estruturais obrigatórios e despacha uma chamada concluída para a capacidade correspondente.
+
+## Converta e despache
+
+Este exemplo é autocontido e não chama um SDK externo. `returnedCall` contém exatamente o subconjunto de campos lido pelo dispatcher.
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+import { runOpenAIToolCall, toOpenAITools, type OpenAIToolCall } from '@vinkius/connect/openai';
+
+const vinkius = new Vinkius({
+  appId: 'vk_app_replace_me',
+  apiKey: 'vk_app_sk_replace_me',
+});
+const capabilities = await vinkius.user('user_123').capabilities();
+const tools = toOpenAITools(capabilities);
+
+const firstTool = tools[0];
+if (firstTool) {
+  const returnedCall: OpenAIToolCall = {
+    function: {
+      name: firstTool.function.name,
+      arguments: '{}',
+    },
+  };
+
+  const result = await runOpenAIToolCall(capabilities, returnedCall);
+  console.log(result.content, result.isError);
+}
+```
+
+Passe `tools` para a operação no cliente de modelo instalado que aceite esse formato de ferramenta de função. Monte os fragmentos da chamada transmitida em um objeto `{ name, arguments }` completo antes do despacho; este adapter não combina partes de um stream.
+
+## Formato convertido
+
+`toOpenAITools` retorna um objeto por capacidade:
+
+```typescript
+{
+  type: 'function',
+  function: {
+    name: capability.name,
+    description: capability.description,
+    parameters: capability.inputSchema,
+  },
+}
+```
+
+`parameters` é normalizado para `{ type: 'object', properties: {} }`, a menos que o schema de origem seja um objeto não vazio. O adapter não valida o schema em relação às regras específicas do provedor.
+
+O pacote não importa um cliente da OpenAI. `OpenAIFunctionTool` e `OpenAIToolCall` são tipos estruturais locais. Verifique se esses campos correspondem à versão do SDK externo usada pela sua aplicação.
+
+## Nomenclatura e despacho
+
+`runOpenAIToolCall` compara `call.function.name` com `capability.name`, o nome de exibição emitido por `toOpenAITools`. Ele não compara com `rawName`.
+
+O nome de exibição padrão usa `${connector}__${rawName}`. Se houver nomes de exibição duplicados, o despacho usa a primeira capacidade correspondente no array. Passe o mesmo array de capacidades para conversão e despacho.
+
+Um nome desconhecido lança um erro simples:
+
+```text
+Error: Unknown capability: <name>
+```
+
+## Interpretação dos argumentos
+
+`call.function.arguments` é interpretado como JSON antes da execução.
+
+| Entrada | Argumentos passados à capacidade |
+| --- | --- |
+| Objeto JSON | O objeto interpretado |
+| Array JSON | O array interpretado, convertido para o tipo de registro do dispatcher |
+| JSON vazio ou malformado | `{}` |
+| `null` em JSON ou um valor primitivo | `{}` |
+
+A interpretação é tolerante, não uma validação. Em particular, arrays passam pela verificação de objeto em runtime, embora os argumentos das capacidades sejam tipificados como `Record<string, unknown>`.
+
+## Resultados e limitações
+
+Uma chamada correspondente resolve para o `CapabilityResult` completo:
+
+```typescript
+{
+  content: Array<{ type: string; text: string }>;
+  isError: boolean;
+}
+```
+
+`isError: true` é retornado sem alterações. Exceções geradas durante a execução da capacidade ainda rejeitam a promise.
+
+`runOpenAIToolCall` não aceita `ExecuteOptions`, portanto não pode encaminhar uma `idempotencyKey`. Localize a capacidade e chame `capability.execute(args, options)` diretamente quando a execução precisar dessas opções.
+
+## API pública
+
+O subpath `@vinkius/connect/openai` exporta:
+
+```typescript
+interface OpenAIFunctionTool {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: JSONSchema;
+  };
+}
+
+interface OpenAIToolCall {
+  function: { name: string; arguments: string };
+}
+
+function toOpenAITools(capabilities: readonly Capability[]): OpenAIFunctionTool[];
+
+function runOpenAIToolCall(
+  capabilities: readonly Capability[],
+  call: OpenAIToolCall,
+): Promise<CapabilityResult>;
+```
+
+## Relacionado
+
+- Use [`openai-agents`](/pt/adapters/openai-agents) para seu contrato de fábrica injetada.
+- Compare [todos os modos de retorno dos adapters](/pt/adapters/overview).
+- Trate separadamente falhas retornadas e exceções em [Tratamento de erros](/pt/guides/error-handling).

@@ -1,0 +1,105 @@
+---
+title: Adaptador Google Gemini
+description: Convierte capacidades en declaraciones de función y despacha las llamadas de función devueltas.
+---
+
+Usa este adaptador cuando tu aplicación envíe declaraciones de función con el estilo de Gemini y reciba llamadas de función. El convertidor solo devuelve declaraciones; tu aplicación proporciona el protocolo circundante de solicitud y respuesta.
+
+## Convertir y despachar
+
+Este ejemplo usa exactamente los campos estructurales de llamada que consume el adaptador y no llama a un SDK externo.
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+import { runGeminiFunctionCall, toGeminiTools, type GeminiFunctionCall } from '@vinkius/connect/gemini';
+
+const vinkius = new Vinkius({
+  appId: 'vk_app_replace_me',
+  apiKey: 'vk_app_sk_replace_me',
+});
+const capabilities = await vinkius.user('user_123').capabilities();
+const declarations = toGeminiTools(capabilities);
+const tools = [{ functionDeclarations: declarations }];
+
+const firstDeclaration = declarations[0];
+if (firstDeclaration) {
+  const returnedCall: GeminiFunctionCall = {
+    name: firstDeclaration.name,
+    args: {},
+  };
+
+  const result = await runGeminiFunctionCall(capabilities, returnedCall);
+  console.log(result.content, result.isError);
+}
+```
+
+`tools` muestra el wrapper que suele requerirse alrededor de las declaraciones, pero el propio adaptador solo devuelve `GeminiFunctionDeclaration[]`. Usa la forma de solicitud documentada por la versión del cliente externo instalada en tu aplicación.
+
+## Formato convertido
+
+Cada declaración tiene esta forma:
+
+```typescript
+{
+  name: capability.name,
+  description: capability.description,
+  parameters: capability.inputSchema,
+}
+```
+
+Un esquema ausente, vacío, falsy o que no sea un objeto observado en runtime se convierte en `{ type: 'object', properties: {} }`. El adaptador no valida ni adapta esquemas a restricciones específicas del proveedor.
+
+El paquete no importa ningún cliente de Google. Sus interfaces de declaración y llamada son tipos estructurales locales, por lo que debes comprobar la compatibilidad con la versión del cliente que usa tu aplicación.
+
+## Nombres y despacho
+
+`runGeminiFunctionCall` solo compara `call.name` con `capability.name`. No usa `rawName`. Los nombres de visualización son `${connector}__${rawName}` por defecto.
+
+La búsqueda devuelve la primera coincidencia. Los nombres de visualización duplicados ejecutan la primera capacidad coincidente según el orden del array. Si falta `args`, se usa `{}`; los argumentos proporcionados se pasan sin validación.
+
+Un nombre desconocido lanza un `Error("Unknown capability: …")` simple.
+
+## Resultados y límites
+
+El despacho devuelve el `CapabilityResult` completo:
+
+```typescript
+{
+  content: Array<{ type: string; text: string }>;
+  isError: boolean;
+}
+```
+
+`isError: true` sigue siendo un resultado devuelto. Las excepciones de ejecución siguen rechazando la promesa.
+
+El adaptador no crea un objeto de respuesta de función ni envía otra solicitud al modelo. `runGeminiFunctionCall` tampoco tiene un parámetro `ExecuteOptions` y no puede reenviar `idempotencyKey`; ejecuta directamente la capacidad seleccionada cuando necesites opciones por ejecución.
+
+## API pública
+
+El subpath `@vinkius/connect/gemini` exporta:
+
+```typescript
+interface GeminiFunctionDeclaration {
+  name: string;
+  description: string;
+  parameters: JSONSchema;
+}
+
+interface GeminiFunctionCall {
+  name: string;
+  args?: Record<string, unknown>;
+}
+
+function toGeminiTools(capabilities: readonly Capability[]): GeminiFunctionDeclaration[];
+
+function runGeminiFunctionCall(
+  capabilities: readonly Capability[],
+  call: GeminiFunctionCall,
+): Promise<CapabilityResult>;
+```
+
+## Relacionado
+
+- Compara [todos los modos de retorno de los adaptadores](/es/adapters/overview).
+- Consulta las referencias de [`CapabilitySet`](/es/reference/client#capabilityset) y [`Capability`](/es/reference/client#capability).
+- Gestiona los fallos de resultado y las excepciones con [Manejo de errores](/es/guides/error-handling).

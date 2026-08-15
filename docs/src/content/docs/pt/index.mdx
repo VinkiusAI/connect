@@ -1,0 +1,120 @@
+---
+title: Conecte uma conta e execute uma ação
+description: Configure um conector com escopo por usuário, carregue suas capacidades e execute uma ação com @vinkius/connect.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Este início rápido conecta uma conta do GitHub para um usuário da aplicação, armazena as credenciais do conector, descobre as ações disponíveis para esse usuário e executa uma ação. O mesmo fluxo funciona para outros conectores; os campos de credenciais e as capacidades vêm da API.
+
+## Pré-requisitos
+
+- Node.js 18 ou posterior, ou um runtime de servidor com `fetch`
+- `@vinkius/connect` instalado
+- Um App ID e uma Application Key do Vinkius em variáveis de ambiente do servidor
+- Um token do GitHub para o conector de exemplo
+
+<Aside type="caution">
+  Execute este código no servidor. A Application Key e as credenciais do conector não devem ser incluídas em bundles do navegador nem em prompts de modelos.
+</Aside>
+
+## Início rápido completo
+
+1. **Crie um cliente reutilizável**
+
+   ```typescript
+   import { Vinkius } from '@vinkius/connect';
+
+   const vinkius = new Vinkius({
+     appId: process.env.VINKIUS_APP_ID!,
+     apiKey: process.env.VINKIUS_APP_KEY!,
+   });
+   ```
+
+   A construção valida os prefixos das credenciais, a URL base e a disponibilidade de `fetch`. Ela não faz nenhuma requisição HTTP.
+
+2. **Crie os handles de usuário e conector**
+
+   ```typescript
+   const user = vinkius.user('alice_123');
+   const github = user.connector('github');
+   ```
+
+   As duas chamadas são lazy. Elas mantêm o ID confiável do usuário da aplicação e o slug do conector, mas não enviam nenhuma requisição. `user.ensure({ plan: 'pro' })` é opcional e só é necessário quando você quer que a API faça o upsert explícito do usuário ou armazene metadados não secretos.
+
+3. **Crie ou recupere a conexão**
+
+   ```typescript
+   const connection = await github.connect();
+   console.log(connection.id);
+   ```
+
+   Isso envia uma requisição `POST`. A API do Vinkius trata a operação como get-or-create para esse usuário da aplicação e conector. Chamar `connect()` novamente ainda envia uma requisição, mas retorna a mesma conexão lógica em vez de criar uma duplicata.
+
+4. **Armazene as credenciais do conector**
+
+   ```typescript
+   const credentialState = await github.credentials.set({
+     GITHUB_TOKEN: process.env.GITHUB_TOKEN!,
+   });
+
+   console.log(credentialState.configured);
+   ```
+
+   Isso envia uma requisição `PUT` para a conexão existente. A resposta informa quais chaves estão configuradas; ela não retorna os valores armazenados. Para um conector cujos campos você não conhece, chame `await github.credentials.schema()` antes de conectar. A consulta do schema lê o catálogo e não exige uma conexão.
+
+5. **Carregue as capacidades deste usuário**
+
+   ```typescript
+   const capabilities = await user.capabilities({ include: ['github'] });
+   const createIssue = capabilities.findCapability('github__create_issue');
+
+   if (!createIssue) {
+     throw new Error('GitHub create_issue is not available for this user');
+   }
+   ```
+
+   Isso envia uma requisição `GET`. `include` é enviado ao servidor, portanto a resposta fica restrita ao GitHub. Um conjunto vazio é válido — por exemplo, quando o conector não está pronto ou não expõe ações correspondentes.
+
+6. **Execute a ação**
+
+   ```typescript
+   const operationId = 'issue-request-123';
+   const result = await createIssue.execute(
+     {
+       owner: 'acme',
+       repo: 'product',
+       title: 'Document the release process',
+     },
+     { idempotencyKey: `create-issue:${operationId}` },
+   );
+
+   const text = result.content.map((part) => part.text).join('\n');
+   if (result.isError) {
+     console.error('The connector reported a failed action:', text);
+   } else {
+     console.log('Issue created:', text);
+   }
+   ```
+
+   A execução envia uma requisição `POST`. A chave de idempotência estável e não vazia permite que o SDK repita falhas transitórias sem representar a mesma ação lógica como uma nova operação. O SDK não valida se a chave está vazia; gere-a e aplique essa validação na sua aplicação.
+
+## Resumo das requisições
+
+| Código | Comportamento de rede |
+| --- | --- |
+| `new Vinkius(...)` | Nenhuma requisição |
+| `vinkius.user(...).connector(...)` | Nenhuma requisição |
+| `github.connect()` | `POST` para obter ou criar a conexão |
+| `github.credentials.set(...)` | `PUT` dos valores das credenciais |
+| `user.capabilities(...)` | `GET` das capacidades agregadas |
+| `createIssue.execute(...)` | `POST` da execução da capacidade |
+
+Uma execução resolvida com `isError: true` é um resultado no nível do conector. Falhas de autenticação, HTTP, timeout e transporte normalmente lançam uma subclasse de `VinkiusError`.
+
+## Próximos passos
+
+- [Instale e configure o cliente](/pt/getting-started/installation)
+- [Crie um formulário de conector a partir do schema](/pt/concepts/connectors)
+- [Converta capacidades para um runtime de modelo](/pt/adapters/overview)
+- [Trate falhas de resultado e de requisição](/pt/guides/error-handling)

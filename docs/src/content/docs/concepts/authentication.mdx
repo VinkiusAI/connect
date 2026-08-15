@@ -1,0 +1,117 @@
+---
+title: Authenticate the application and bind user scope
+description: Keep application credentials on the server, derive externalId from trusted identity, and write connector credentials without reading values back.
+---
+
+The SDK authenticates your backend with an App ID and Application Key. It does not authenticate your end users. Your application must verify the caller, authorize the requested operation, and derive the `externalId` used in every user-scoped request.
+
+## Keep the application key behind a server boundary
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+
+export const vinkius = new Vinkius({
+  appId: process.env.VINKIUS_APP_ID!,
+  apiKey: process.env.VINKIUS_APP_KEY!,
+});
+```
+
+Conceptually, requests send the Application Key as bearer authorization and the App ID in an application header. Do not initialize this client in browser code or return either value to a client.
+
+The SDK does not expose a hosted OAuth or connector-setup UI API. If a connector requires credentials, your application collects them in its own authenticated server flow and sends them with `credentials.set()`.
+
+## Derive `externalId` from authenticated state
+
+```typescript
+interface Session {
+  userId: string;
+}
+
+async function listActions(session: Session) {
+  return vinkius.user(session.userId).capabilities();
+}
+```
+
+Use your own stable, preferably opaque user identifier. The SDK rejects values that:
+
+- are empty or longer than 255 characters;
+- contain whitespace, `/`, or `\`;
+- begin with `vk_app_user_`, which denotes an internal identifier rather than your ID.
+
+`user(externalId)` returns a handle and makes no request. `ensure(metadata)` is optional:
+
+```typescript
+await vinkius.user(session.userId).ensure({ plan: 'team' });
+```
+
+The API treats this call as an idempotent upsert. Keep metadata non-secret; it is not a credential store.
+
+## Reject client-selected user scope
+
+This endpoint is vulnerable because the request body chooses the user:
+
+```typescript
+// Do not use this pattern without an authorization check.
+const { externalId } = await request.json();
+const capabilities = await vinkius.user(externalId).capabilities();
+```
+
+Bind scope before constructing the handle:
+
+```typescript
+async function handleCapabilities(request: Request) {
+  const session = await requireSession(request); // application code
+  const capabilities = await vinkius.user(session.userId).capabilities();
+
+  return Response.json(
+    capabilities.map(({ name, description, inputSchema }) => ({
+      name,
+      description,
+      inputSchema,
+    })),
+  );
+}
+```
+
+The authorization boundary is your session lookup. An App ID and key authorize the application, not a particular browser user.
+
+## Read the credential schema before collecting values
+
+`credentials.schema()` reads connector metadata from the catalog. It does not require an existing user connection:
+
+```typescript
+const github = vinkius.user(session.userId).connector('github');
+const schema = await github.credentials.schema();
+```
+
+Use the schema to decide which fields your server form should accept. Do not assume all connectors use tokens or the same key names.
+
+## Write credentials only after creating the connection
+
+```typescript
+await github.connect();
+const state = await github.credentials.set({
+  GITHUB_TOKEN: submittedToken,
+});
+
+console.log(state.configured.GITHUB_TOKEN);
+```
+
+`credentials.status()` and `credentials.set()` require a connection; otherwise they throw `ConnectorNotConnectedError`. Their responses contain the schema and a map of configured keys, not stored credential values:
+
+```typescript
+const state = await github.credentials.status();
+// state.configured: Record<string, boolean>
+```
+
+Treat submitted values as secrets in your own code. The transport's observability redaction covers a fixed list of known field names, but it cannot identify every custom name you might log elsewhere.
+
+## Separate application environments
+
+Use different App IDs and keys for development, staging, and live traffic. This separates users, connection state, and credential rotation at the application-authentication boundary.
+
+## Next steps
+
+- [Implement a multi-tenant route](/guides/multi-tenant)
+- [Build connector setup from schema and status](/concepts/connectors)
+- [Handle authentication and validation errors](/guides/error-handling)

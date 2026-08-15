@@ -1,0 +1,123 @@
+---
+title: Carregue, selecione e execute capacidades
+description: Agregue ações para um usuário, filtre o escopo dos conectores, resolva colisões de nomes e execute com cancelamento ou idempotência.
+---
+
+Uma capacidade é uma ação retornada para uma conexão específica de usuário. Ela combina a descrição voltada ao modelo e o JSON Schema com a rota da conexão necessária para executar a ação.
+
+Use o método agregado do usuário quando um assistente puder trabalhar com vários conectores, ou um handle de conector quando apenas uma conta conectada deva contribuir com ações.
+
+## Agregue capacidades para um usuário
+
+```typescript
+const user = vinkius.user('alice_123');
+const capabilities = await user.capabilities();
+```
+
+Isso faz uma requisição ao endpoint de capacidades do usuário e converte cada item retornado em uma `Capability` executável. O endpoint determina quais conexões contribuem com ações; o cliente não executa uma segunda verificação de prontidão.
+
+Um `CapabilitySet` vazio é válido. Ele pode significar que o usuário não tem ações disponíveis, que nenhuma conexão corresponde ao filtro solicitado ou que o serviço não retornou nenhuma. Trate isso explicitamente:
+
+```typescript
+if (capabilities.length === 0) {
+  return { tools: [], message: 'Connect an account before requesting this action.' };
+}
+```
+
+## Restrinja o escopo dos conectores
+
+```typescript
+const selected = await user.capabilities({
+  include: ['github', 'slack'],
+  exclude: ['slack'],
+});
+```
+
+`include` é enviado ao servidor como filtro de conectores. `exclude` é aplicado pelo SDK depois da resposta. Neste exemplo, a requisição pede GitHub e Slack e depois remove o Slack localmente.
+
+Para um conector, use seu handle:
+
+```typescript
+const githubCapabilities = await user.connector('github').capabilities();
+```
+
+A consulta com escopo de conector exige uma conexão existente e pode primeiro listar as conexões para resolver seu ID. Ela lança `ConnectorNotConnectedError` quando nenhuma correspondência existe.
+
+## Examine o contrato da capacidade
+
+```typescript
+for (const capability of capabilities) {
+  console.log({
+    name: capability.name,
+    rawName: capability.rawName,
+    connector: capability.connector,
+    connectionId: capability.connectionId,
+    title: capability.title,
+    description: capability.description,
+    inputSchema: capability.inputSchema,
+  });
+}
+```
+
+Por padrão, `name` é `${connector}__${rawName}`, como `github__create_issue`. `rawName` é o nome da ação do conector e é o valor que o SDK envia para execução. Você pode substituir a função do nome de exibição com `namespaceCapability` no construtor do cliente, mas os adapters não validam as regras de nomenclatura do provedor.
+
+## Selecione sem pressupor disponibilidade
+
+`CapabilitySet` estende `Array<Capability>` e acrescenta dois helpers:
+
+```typescript
+const githubOnly = capabilities.forConnector('github');
+const createIssue = githubOnly.findCapability('github__create_issue');
+```
+
+`forConnector()` compara os slugs dos conectores de forma exata. `findCapability()` aceita um nome de exibição ou um nome bruto e retorna a primeira correspondência. Nomes brutos podem colidir — por exemplo, dois conectores podem expor `search`. Prefira um nome de exibição exclusivo ou filtre primeiro por conector.
+
+## Execute com o schema retornado
+
+```typescript
+if (!createIssue) {
+  throw new Error('The requested action is not available for this user');
+}
+
+const result = await createIssue.execute(
+  { owner: 'acme', repo: 'product', title: 'Document retries' },
+  {
+    idempotencyKey: 'create-issue:operation-8042',
+    signal: request.signal,
+  },
+);
+
+const output = result.content.map((part) => part.text).join('\n');
+if (result.isError) {
+  console.error(output);
+}
+```
+
+Os argumentos são `Record<string, unknown>` porque os schemas são descobertos em runtime. Valide ou construa a entrada a partir de `inputSchema` antes da execução quando sua aplicação precisar de garantias mais rigorosas.
+
+Use uma chave não vazia derivada da operação lógica para efeitos colaterais. Reutilize-a apenas ao repetir essa mesma operação. O SDK não rejeita uma chave vazia; a validação na aplicação é obrigatória. Sem uma chave, a execução da capacidade recebe uma tentativa de transporte.
+
+## Entenda os caminhos de resultado e de exceção
+
+`execute()` resolve para:
+
+```typescript
+interface CapabilityResult {
+  content: Array<{ type: string; text: string }>;
+  isError: boolean;
+}
+```
+
+`isError: true` significa que a capacidade retornou o resultado de uma ação com falha. Falhas de HTTP, autenticação, validação, limite de taxa, cota, timeout e rede normalmente lançam um erro do SDK.
+
+Helpers de despacho dos adapters e funções vinculadas por fábricas não aceitam `ExecuteOptions`. Se uma operação exigir cancelamento ou uma chave de idempotência, resolva a `Capability` e chame `execute()` diretamente.
+
+## Converta apenas na fronteira com o modelo
+
+Os adapters preservam nomes de exibição, descrições e schemas de entrada em formatos de provedores ou frameworks. Mantenha o `CapabilitySet` original para despacho, escopo do usuário e execução direta; não tente reconstruir capacidades a partir das definições de ferramentas convertidas.
+
+## Próximos passos
+
+- [Compare as saídas dos adapters e o tratamento dos resultados](/pt/adapters/overview)
+- [Acompanhe o caminho da requisição subjacente](/pt/concepts/architecture)
+- [Trate repetições e os dois canais de falha](/pt/guides/error-handling)

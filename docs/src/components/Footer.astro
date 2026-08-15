@@ -1,0 +1,80 @@
+---
+import LastUpdated from 'virtual:starlight/components/LastUpdated';
+import Pagination from 'virtual:starlight/components/Pagination';
+---
+
+<footer class="vk-doc-footer">
+  <Pagination />
+
+  <div class="vk-doc-footer__utility">
+    <span class="vk-doc-footer__brand">Vinkius Connect</span>
+    <div class="vk-doc-footer__meta">
+      <LastUpdated />
+      <nav class="vk-doc-footer__links" aria-label="Project links">
+        <a href="https://github.com/VinkiusAI/connect">GitHub</a>
+        <a href="https://www.npmjs.com/package/@vinkius/connect">npm</a>
+      </nav>
+    </div>
+  </div>
+</footer>
+
+<style>
+  @layer starlight.core {
+    .vk-doc-footer {
+      margin-top: clamp(4rem, 7vw, 6rem);
+    }
+
+    .vk-doc-footer__utility,
+    .vk-doc-footer__meta,
+    .vk-doc-footer__links {
+      display: flex;
+      align-items: center;
+    }
+
+    .vk-doc-footer__utility {
+      justify-content: space-between;
+      gap: 1.5rem;
+      padding-block: 1.75rem 0.5rem;
+      color: var(--sl-color-gray-3);
+    }
+
+    .vk-doc-footer__brand {
+      color: var(--sl-color-gray-2);
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+
+    .vk-doc-footer__meta {
+      justify-content: flex-end;
+      gap: 1.25rem;
+      font-size: 0.74rem;
+    }
+
+    .vk-doc-footer__links {
+      gap: 0.9rem;
+    }
+
+    .vk-doc-footer__links a {
+      color: var(--sl-color-gray-3);
+      font-weight: 650;
+      text-decoration: none;
+    }
+
+    .vk-doc-footer__links a:hover {
+      color: var(--sl-color-white);
+    }
+
+    @media (max-width: 40rem) {
+      .vk-doc-footer__utility,
+      .vk-doc-footer__meta {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .vk-doc-footer__meta {
+        gap: 0.7rem;
+      }
+    }
+  }
+</style>

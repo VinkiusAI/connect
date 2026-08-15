@@ -1,0 +1,110 @@
+---
+title: Install and initialize the SDK
+description: Add @vinkius/connect to a server runtime, configure application credentials, and verify the API connection.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Install the package in your backend and create one reusable `Vinkius` instance. The client stores application-level configuration, not per-user state, so the same instance can serve requests for many users.
+
+## Prerequisites
+
+- Node.js 18 or later, or another server runtime that provides `fetch`
+- A Vinkius App ID beginning with `vk_app_`
+- A Vinkius Application Key beginning with `vk_app_sk_`
+
+## Install the package
+
+```bash
+npm install @vinkius/connect
+```
+
+Equivalent commands are `pnpm add @vinkius/connect`, `yarn add @vinkius/connect`, and `bun add @vinkius/connect`.
+
+## Configure server environment variables
+
+```bash
+VINKIUS_APP_ID=vk_app_xxxxxxxxxxxxxxxx
+VINKIUS_APP_KEY=vk_app_sk_xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+<Aside type="caution">
+  `VINKIUS_APP_KEY` authorizes API requests. Keep it in server environment or secret storage. Do not use it in browser code, mobile binaries, public logs, or model context.
+</Aside>
+
+## Create a server-only module
+
+```typescript
+// lib/vinkius.ts — import this module only from server code
+import { Vinkius } from '@vinkius/connect';
+
+function required(name: 'VINKIUS_APP_ID' | 'VINKIUS_APP_KEY'): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`Missing ${name}`);
+  return value;
+}
+
+export const vinkius = new Vinkius({
+  appId: required('VINKIUS_APP_ID'),
+  apiKey: required('VINKIUS_APP_KEY'),
+});
+```
+
+The constructor checks the App ID and key prefixes, parses `baseUrl` when supplied, and requires a `fetch` implementation. It makes no request. It does not perform runtime range validation for every optional number or callback, so keep `timeoutMs`, `maxRetries`, hooks, and custom naming functions under application control.
+
+If your runtime has no global `fetch`, pass a compatible implementation:
+
+```typescript
+const vinkius = new Vinkius({
+  appId,
+  apiKey,
+  fetch: customFetch,
+});
+```
+
+## Verify credentials with a request
+
+A handle-only check does not contact the API. Use a catalog read for a real smoke test:
+
+```typescript
+import { VinkiusError } from '@vinkius/connect';
+import { vinkius } from './lib/vinkius';
+
+async function checkVinkiusConnection(): Promise<void> {
+  try {
+    const page = await vinkius.catalog.list({ page: 1 });
+    console.log(`Vinkius API reachable; received ${page.data.length} connectors`);
+  } catch (error: unknown) {
+    if (error instanceof VinkiusError) {
+      console.error({
+        code: error.code,
+        status: error.status,
+        requestId: error.requestId,
+      });
+    }
+    throw error;
+  }
+}
+
+await checkVinkiusConnection();
+```
+
+This check verifies that the runtime can reach the API and that the application credentials are accepted. A local `ConfigError` occurs before any request; `AuthError` represents an HTTP `401` or `403` response.
+
+## Create a user handle
+
+```typescript
+const user = vinkius.user('alice_123');
+```
+
+`user()` makes no request. The ID must be your application's stable user identifier: 1–255 characters, not beginning with `vk_app_user_`, and without whitespace, `/`, or `\`.
+
+<Aside type="note">
+  `user.ensure(metadata)` is optional. Call it when you need an explicit API upsert or want to attach non-secret metadata—not merely to obtain a handle.
+</Aside>
+
+## Next steps
+
+- [Run the connect-to-execute quickstart](/)
+- [Bind `externalId` to an authenticated session](/guides/multi-tenant)
+- [Review all constructor options](/reference/client#create-a-client)

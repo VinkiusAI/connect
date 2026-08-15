@@ -1,0 +1,169 @@
+---
+title: Aplique o escopo do usuário em um backend multi-tenant
+description: Derive externalId do estado autenticado, autorize operações de conectores e impeça que um tenant selecione as capacidades de outro.
+---
+
+Um cliente Vinkius tem escopo em uma aplicação, enquanto cada handle fluente de usuário tem escopo definido por `externalId`. Seu backend deve fornecer a fronteira de autorização ausente: determinar qual identidade autenticada pode agir em nome de qual usuário da aplicação antes de construir um handle.
+
+A principal ameaça é a confusão do escopo do usuário. Se uma requisição puder enviar um `externalId` arbitrário, as credenciais no nível da aplicação poderão ser usadas para acessar os conectores de outro usuário, embora cada rota da API tenha escopo por usuário.
+
+## Crie um cliente com escopo na aplicação
+
+```typescript
+// lib/vinkius.ts — exclusivo do servidor
+import { Vinkius } from '@vinkius/connect';
+
+export const vinkius = new Vinkius({
+  appId: process.env.VINKIUS_APP_ID!,
+  apiKey: process.env.VINKIUS_APP_KEY!,
+});
+```
+
+O cliente não mantém um campo mutável para o usuário atual. Reutilize-o entre requisições e crie um novo `UserContext` lazy para o ID autenticado em cada operação.
+
+## Resolva o escopo antes de ler a entrada da requisição
+
+```typescript
+interface Session {
+  userId: string;
+  tenantId: string;
+}
+
+async function userScope(request: Request): Promise<string> {
+  const session: Session = await requireSession(request); // código da aplicação
+
+  // Se o produto tiver organizações, verifique a associação aqui.
+  await requireTenantMembership(session.userId, session.tenantId);
+
+  // Use um ID opaco e estável obtido do resultado da autorização.
+  return `${session.tenantId}_${session.userId}`;
+}
+```
+
+O esquema de composição é específico da aplicação. Ele deve permanecer estável, respeitar o limite de 255 caracteres do SDK e não conter espaços em branco, barras normais ou barras invertidas.
+
+Não confie neste padrão:
+
+```typescript
+// Vulnerável, a menos que uma verificação de autorização separada comprove o acesso a externalId.
+const { externalId } = await request.json();
+const user = vinkius.user(externalId);
+```
+
+## Retorne apenas as capacidades do usuário autenticado
+
+```typescript
+import { vinkius } from './lib/vinkius';
+
+export async function handleTools(request: Request): Promise<Response> {
+  const externalId = await userScope(request);
+  const capabilities = await vinkius.user(externalId).capabilities({
+    include: ['github'],
+    signal: request.signal,
+  });
+
+  return Response.json(
+    capabilities.map(({ name, description, inputSchema }) => ({
+      name,
+      description,
+      inputSchema,
+    })),
+  );
+}
+```
+
+Não retorne `connectionId`, a menos que seu cliente realmente precise dele. Ele é um dado de roteamento, não um token de autorização, mas reduzir os identificadores expostos diminui o acoplamento acidental.
+
+## Autorize separadamente a configuração do conector
+
+A configuração do conector grava credenciais e deve ter sua própria verificação de permissão:
+
+```typescript
+interface ConnectorInput {
+  slug: string;
+  values: Record<string, string>;
+}
+
+export async function handleConnectorSetup(request: Request): Promise<Response> {
+  const externalId = await userScope(request);
+  await requirePermission(request, 'connectors:write'); // código da aplicação
+
+  const input = (await request.json()) as ConnectorInput;
+  const connector = vinkius.user(externalId).connector(input.slug);
+
+  const schema = await connector.credentials.schema({ signal: request.signal });
+  validateCredentialKeys(input.values, schema); // código da aplicação
+
+  await connector.connect({ signal: request.signal });
+  const credentialState = await connector.credentials.set(input.values, {
+    signal: request.signal,
+  });
+
+  return Response.json({ configured: credentialState.configured });
+}
+```
+
+O exemplo mantém os valores das credenciais dentro da requisição do servidor. Não os repita na resposta, anexe aos metadados do usuário, adicione às mensagens do modelo nem registre o corpo da requisição.
+
+Este SDK não contém uma interface hospedada de conectores nem uma API OAuth. Se o seu produto usar uma troca OAuth, conclua-a em uma rota autorizada do servidor e grave os campos resultantes do conector de acordo com o schema do catálogo.
+
+## Execute somente capacidades carregadas no mesmo escopo
+
+```typescript
+export async function handleCreateIssue(
+  request: Request,
+  operationId: string,
+): Promise<Response> {
+  const externalId = await userScope(request);
+  await requirePermission(request, 'issues:create');
+
+  const capabilities = await vinkius.user(externalId).capabilities({
+    include: ['github'],
+    signal: request.signal,
+  });
+  const capability = capabilities.findCapability('github__create_issue');
+
+  if (!capability) {
+    return Response.json({ error: 'GitHub action unavailable' }, { status: 409 });
+  }
+
+  const input = await request.json();
+  const result = await capability.execute(input, {
+    signal: request.signal,
+    idempotencyKey: `create-issue:${externalId}:${operationId}`,
+  });
+
+  return Response.json(result, { status: result.isError ? 422 : 200 });
+}
+```
+
+Não mantenha um conjunto global de capacidades para reutilizá-lo entre usuários. Cada capacidade armazena um ID de conexão proveniente do usuário cuja resposta de agregação a criou.
+
+## Use metadados somente para contexto não secreto da aplicação
+
+```typescript
+await vinkius.user(externalId).ensure({
+  tenantTier: 'team',
+  region: 'eu',
+});
+```
+
+`ensure()` é opcional e executa um upsert na API. Os metadados não devem conter credenciais de conectores, tokens de sessão ou decisões de autorização que seu backend não tenha verificado de forma independente.
+
+## Teste a fronteira de isolamento
+
+Automatize pelo menos estes casos com dois usuários ou tenants distintos:
+
+1. Alice e Bob podem conectar o mesmo slug e recebem IDs de conexão diferentes.
+2. Alice não consegue fazer uma requisição que substitua seu `externalId` pelo de Bob.
+3. Um usuário sem conector recebe um conjunto vazio, não as capacidades de outro usuário.
+4. Uma função somente leitura não pode chamar a rota de configuração do conector.
+5. Valores de credenciais não aparecem nas respostas das rotas, nos logs, nos hooks nem na entrada do modelo.
+6. Uma capacidade carregada para Alice nunca é retida e despachada a partir da requisição de Bob.
+7. Os ambientes de desenvolvimento e produção usam App IDs e chaves diferentes.
+
+## Próximos passos
+
+- [Entenda as credenciais da aplicação e do conector](/pt/concepts/authentication)
+- [Restrinja as capacidades enviadas a um modelo](/pt/concepts/capabilities)
+- [Trate falhas de requisição e de capacidades](/pt/guides/error-handling)

@@ -1,0 +1,107 @@
+---
+title: Adaptador Anthropic
+description: Convierte capacidades en definiciones de herramientas de Messages y despacha bloques tool_use.
+---
+
+Usa este adaptador cuando tu aplicación intercambie definiciones de herramientas con el estilo de Messages y reciba bloques `tool_use`. La conversión y la ejecución son operaciones independientes.
+
+## Convertir y despachar
+
+Este ejemplo solo construye el bloque estructural que lee el dispatcher; no depende de una API de cliente externa.
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+import { runAnthropicToolUse, toAnthropicTools, type AnthropicToolUse } from '@vinkius/connect/anthropic';
+
+const vinkius = new Vinkius({
+  appId: 'vk_app_replace_me',
+  apiKey: 'vk_app_sk_replace_me',
+});
+const capabilities = await vinkius.user('user_123').capabilities();
+const tools = toAnthropicTools(capabilities);
+
+const firstTool = tools[0];
+if (firstTool) {
+  const returnedUse: AnthropicToolUse = {
+    name: firstTool.name,
+    input: {},
+  };
+
+  const result = await runAnthropicToolUse(capabilities, returnedUse);
+  console.log(result.content, result.isError);
+}
+```
+
+Pasa `tools` a la operación de tu cliente instalado que acepte esta forma. Después de la ejecución, tu aplicación es responsable de convertir `CapabilityResult` en el bloque de respuesta que espera su bucle de conversación.
+
+## Formato convertido
+
+`toAnthropicTools` devuelve una entrada por capacidad:
+
+```typescript
+{
+  name: capability.name,
+  description: capability.description,
+  input_schema: capability.inputSchema,
+}
+```
+
+Un esquema solo se conserva cuando es un objeto no vacío; de lo contrario, `input_schema` se convierte en `{ type: 'object', properties: {} }`. No se valida ni se reescribe el esquema.
+
+El adaptador no tiene una dependencia de runtime de un paquete de Anthropic. Sus exports describen un subconjunto estructural. Confirma ese subconjunto con la versión del SDK externo instalada por tu aplicación.
+
+## Nombres y despacho
+
+`runAnthropicToolUse` compara `use.name` con el nombre de visualización de la capacidad. No compara `rawName`. Los nombres de visualización son `${connector}__${rawName}` por defecto.
+
+Se ejecuta la primera capacidad cuyo nombre de visualización coincida, por lo que los nombres de visualización duplicados dependen del orden. Usa el mismo array de capacidades para la conversión y el despacho.
+
+Un valor `input` nullish observado en runtime se convierte en `{}`. Por lo demás, el adaptador pasa el objeto de entrada sin validarlo ni convertirlo.
+
+Un nombre desconocido lanza un `Error("Unknown capability: …")` simple.
+
+## Resultados y límites
+
+El dispatcher conserva el `CapabilityResult` completo, incluidas todas las partes de contenido e `isError`:
+
+```typescript
+const result = await runAnthropicToolUse(capabilities, returnedUse);
+
+if (result.isError) {
+  // La capacidad finalizó con un resultado de error.
+}
+```
+
+Un `isError: true` devuelto no se lanza. Las excepciones de la ejecución de la capacidad siguen rechazando la promesa.
+
+El helper no crea un bloque de respuesta del proveedor ni continúa el bucle del modelo. Tampoco acepta `ExecuteOptions` ni una `idempotencyKey`; llama directamente a la `Capability` correspondiente cuando necesites esas opciones.
+
+## API pública
+
+El subpath `@vinkius/connect/anthropic` exporta:
+
+```typescript
+interface AnthropicTool {
+  name: string;
+  description: string;
+  input_schema: JSONSchema;
+}
+
+interface AnthropicToolUse {
+  name: string;
+  input: Record<string, unknown>;
+}
+
+function toAnthropicTools(capabilities: readonly Capability[]): AnthropicTool[];
+
+function runAnthropicToolUse(
+  capabilities: readonly Capability[],
+  use: AnthropicToolUse,
+): Promise<CapabilityResult>;
+```
+
+## Relacionado
+
+- Compara [todos los formatos de adaptador](/es/adapters/overview).
+- Consulta las referencias de [`CapabilitySet`](/es/reference/client#capabilityset) y [`Capability`](/es/reference/client#capability).
+- Separa los fallos de resultado de las excepciones con [Manejo de errores](/es/guides/error-handling).

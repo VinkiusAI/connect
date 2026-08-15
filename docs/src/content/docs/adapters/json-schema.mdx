@@ -1,0 +1,111 @@
+---
+title: JSON Schema Adapter
+description: Produce framework-free JSON Schema tool definitions and dispatch by display or raw name.
+---
+
+Use this adapter when your application owns the tool transport and dispatch protocol. Its output is plain JSON Schema metadata without a provider or framework envelope.
+
+## Convert and dispatch
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+import { executeByName, toJSONSchemaTools } from '@vinkius/connect/json-schema';
+
+const vinkius = new Vinkius({
+  appId: 'vk_app_replace_me',
+  apiKey: 'vk_app_sk_replace_me',
+});
+const capabilities = await vinkius.user('user_123').capabilities();
+const definitions = toJSONSchemaTools(capabilities);
+
+const firstDefinition = definitions[0];
+if (firstDefinition) {
+  const result = await executeByName(capabilities, firstDefinition.name, {});
+
+  console.log(result.content, result.isError);
+}
+```
+
+You can serialize `definitions`, map them to another protocol, or store them as runtime metadata. The adapter does not send them anywhere.
+
+## Converted format
+
+`toJSONSchemaTools` returns one definition per capability:
+
+```typescript
+{
+  name: capability.name,
+  description: capability.description,
+  parameters: capability.inputSchema,
+}
+```
+
+`parameters` is guaranteed to be a non-empty object. An empty, missing, falsy, or non-object schema observed at runtime is replaced with:
+
+```json
+{ "type": "object", "properties": {} }
+```
+
+No validation, transport, model client, or framework wrapper is included.
+
+## Names and first-match dispatch
+
+`executeByName(capabilities, name, args?)` scans the array from the beginning. A candidate matches when either:
+
+```typescript
+candidate.name === name || candidate.rawName === name;
+```
+
+Prefer the display name, which defaults to `${connector}__${rawName}`. Raw names can repeat across connectors. If two capabilities expose the same raw name, the first matching array item executes. The same first-match rule applies to any duplicated display name.
+
+Missing `args` becomes `{}`. Arguments are not parsed or validated.
+
+An unknown name throws a plain `Error("Unknown capability: …")`.
+
+## Results and limits
+
+`executeByName` preserves the complete `CapabilityResult`, including `content[].type` and `isError`. A capability can therefore resolve with `isError: true`; execution exceptions still reject the promise.
+
+The helper does not accept `ExecuteOptions` and cannot forward an `idempotencyKey`. When idempotency is required, select the capability yourself and call:
+
+```typescript
+const firstCapability = capabilities[0];
+
+if (firstCapability) {
+  const result = await firstCapability.execute(
+    {},
+    {
+      idempotencyKey: 'request_123',
+    },
+  );
+  console.log(result.content, result.isError);
+}
+```
+
+This adapter is the framework-free output. It does not claim compatibility with an external provider merely because that provider accepts some form of JSON Schema.
+
+## Public API
+
+The `@vinkius/connect/json-schema` subpath exports:
+
+```typescript
+interface JSONSchemaTool {
+  name: string;
+  description: string;
+  parameters: JSONSchema;
+}
+
+function toJSONSchemaTools(capabilities: readonly Capability[]): JSONSchemaTool[];
+
+function executeByName(
+  capabilities: readonly Capability[],
+  name: string,
+  args?: Record<string, unknown>,
+): Promise<CapabilityResult>;
+```
+
+## Related
+
+- Compare [provider and framework adapters](/adapters/overview).
+- Configure display names through the [client options](/reference/client#create-a-client).
+- Handle result failures and exceptions with [Error Handling](/guides/error-handling).

@@ -1,0 +1,92 @@
+---
+title: From user-scoped connectors to executable capabilities
+description: Understand the Connect SDK flow from an authenticated application user to actions that code or a model can execute.
+---
+
+Vinkius Connect SDK gives your backend one API for configuring external-service connectors per application user and retrieving the actions those connections expose. Your code can execute an action directly or convert the same capability objects into the structural tool format used by a model runtime.
+
+The SDK does not provide a hosted OAuth flow or a credential UI. Your application owns authentication, authorization, credential collection, and the user experience; the SDK addresses the Vinkius API and executes the returned capabilities.
+
+## The end-to-end flow
+
+1. Derive a stable `externalId` from the authenticated session.
+2. Create a lazy connector handle for that user.
+3. Read the connector credential schema and collect the required values in your server flow.
+4. Create the connection and write its credentials.
+5. Load the user's capabilities, optionally restricted to selected connectors.
+6. Execute a capability directly or convert it at your model boundary.
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+
+const vinkius = new Vinkius({
+  appId: process.env.VINKIUS_APP_ID!,
+  apiKey: process.env.VINKIUS_APP_KEY!,
+});
+
+async function configureAndListActions(
+  externalId: string,
+  credentials: Record<string, string>,
+) {
+  const user = vinkius.user(externalId);
+  const connector = user.connector('github');
+
+  const schema = await connector.credentials.schema();
+  await connector.connect();
+  const credentialState = await connector.credentials.set(credentials);
+  const capabilities = await user.capabilities({ include: ['github'] });
+
+  return {
+    schema,
+    configured: credentialState.configured,
+    actions: capabilities.map(({ name, description }) => ({ name, description })),
+  };
+}
+```
+
+## Connector, connection, and capability
+
+| Term | Meaning | Example |
+| --- | --- | --- |
+| Connector | An integration available in the catalog | `github` |
+| Connection | One connector configured for one application user | Alice's GitHub connection |
+| Capability | An executable action exposed by a connection | `github__create_issue` |
+
+`vinkius.user('alice_123')` and `.connector('github')` are handles. Creating them performs no request. Operations such as `connect()`, `credentials.set()`, `capabilities()`, and `execute()` cross the network.
+
+## User scope is part of the route
+
+Every user operation is addressed by both your application credentials and the `externalId` passed by your backend. Two users can connect the same connector while keeping separate connection state and credentials.
+
+Do not accept `externalId` as an unrestricted client input. Resolve it from the session or verify that the caller is authorized to act for it before creating the handle.
+
+## Capabilities are the execution boundary
+
+A `Capability` contains:
+
+- a namespaced display name for model-facing lookup;
+- a raw connector action name used for execution;
+- a description and JSON Schema input contract;
+- the connector and connection ID needed to route the request;
+- `execute(args, { signal, idempotencyKey })`.
+
+```typescript
+const capabilities = await vinkius.user('alice_123').capabilities();
+
+for (const capability of capabilities) {
+  console.log(capability.name, capability.inputSchema);
+}
+```
+
+An empty `CapabilitySet` is a normal result. Treat capability availability as runtime data rather than assuming every user has the same tools.
+
+## Adapters stay at the model boundary
+
+Core capabilities do not depend on a model provider. Adapter subpaths map their names, descriptions, and schemas into structural provider or framework shapes. The adapter package has no runtime dependency on those external frameworks, so your application remains responsible for choosing and testing a compatible framework version.
+
+## Next steps
+
+- [Install the SDK](/getting-started/installation)
+- [Connect an account and execute an action](/)
+- [Understand connector state](/concepts/connectors)
+- [Choose an adapter](/adapters/overview)

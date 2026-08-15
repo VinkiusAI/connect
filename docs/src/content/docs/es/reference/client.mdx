@@ -1,0 +1,1114 @@
+---
+title: Cliente Vinkius
+description: Consulta la referencia del cliente Vinkius, las API fluidas y de bajo nivel, el contrato de capacidades, los errores, los reintentos, los hooks y las utilidades.
+---
+
+`Vinkius` es el punto de entrada con alcance de aplicación. Usa sus handles fluidos para los flujos de usuarios, conectores, credenciales y capacidades. Usa los clientes de bajo nivel cuando necesites operaciones directas sobre recursos.
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+
+const vinkius = new Vinkius({
+  appId: process.env.VINKIUS_APP_ID!,
+  apiKey: process.env.VINKIUS_APP_KEY!,
+});
+
+const user = vinkius.user('alice_123'); // Sin solicitud.
+const github = user.connector('github'); // Sin solicitud.
+
+await github.connect();
+await github.credentials.set({ GITHUB_TOKEN: process.env.GITHUB_TOKEN! });
+
+const capabilities = await github.capabilities();
+```
+
+## Exports del paquete
+
+### Paquete raíz
+
+Importa estos valores desde `@vinkius/connect`:
+
+| Categoría | Exports |
+| --- | --- |
+| Cliente y handles fluidos | `Vinkius`, `UserContext`, `Connector`, `CredentialsHandle`, `Capability`, `CapabilitySet` |
+| Clientes de bajo nivel | `CatalogClient`, `AppUsersClient`, `ConnectionsClient`, `CredentialsClient`, `ExecutionClient` |
+| Infraestructura | `ResolverCache`, `VERSION` |
+| Errores | `VinkiusError`, `ConfigError`, `AuthError`, `NotFoundError`, `ValidationError`, `RateLimitError`, `QuotaError`, `OverageError`, `ConnectorNotConnectedError`, `NotImplementedError`, `ConnectionError` |
+
+El paquete raíz también exporta estos tipos:
+
+| Categoría | Exports |
+| --- | --- |
+| Cliente y ejecución | `VinkiusOptions`, `RequestOptions`, `ExecuteOptions`, `Hooks`, `CapabilityExecutor`, `CapabilityQuery` |
+| Entradas de bajo nivel | `CreateAppUserInput`, `UpdateAppUserInput`, `CreateConnectionInput`, `SetCredentialsInput`, `ExecuteCapabilityInput` |
+| Recursos | `AppUser`, `Connection`, `CatalogConnector`, `CatalogConnectorDetail`, `CredentialType`, `CredentialField`, `CredentialSchema`, `CredentialStatus` |
+| Capacidades | `ConnectorStatus`, `ConnectorSummary`, `CapabilityResult`, `CapabilityData`, `JSONSchema` |
+| Paginación y primitivos | `Paginated`, `PageMeta`, `PageLinks`, `ISODate` |
+| Errores | `VinkiusErrorCode` |
+
+`HttpClient`, los componentes internos de reintentos, los helpers de redacción y los helpers compartidos de los adaptadores no son exports del paquete raíz. Aunque las clases de clientes de bajo nivel se exportan, sus constructores requieren el tipo interno `HttpClient`. Obtén instancias mediante `vinkius.catalog`, `vinkius.users` y las fábricas con alcance descritas a continuación.
+
+### Subpaths del paquete
+
+El paquete expone estos puntos de entrada de adaptadores. No hay un export comodín de adaptadores ni un subpath público `core`, `types` o `adapters/shared`.
+
+| Subpath | Exports públicos |
+| --- | --- |
+| `@vinkius/connect/openai` | `toOpenAITools`, `runOpenAIToolCall`, `OpenAIFunctionTool`, `OpenAIToolCall` |
+| `@vinkius/connect/anthropic` | `toAnthropicTools`, `runAnthropicToolUse`, `AnthropicTool`, `AnthropicToolUse` |
+| `@vinkius/connect/ai-sdk` | `toAISDKTools`, `AISDKTool`, `ToAISDKOptions` |
+| `@vinkius/connect/gemini` | `toGeminiTools`, `runGeminiFunctionCall`, `GeminiFunctionDeclaration`, `GeminiFunctionCall` |
+| `@vinkius/connect/langchain` | `toLangChainTools`, `LangChainToolFactory`, `ToLangChainOptions` |
+| `@vinkius/connect/json-schema` | `toJSONSchemaTools`, `executeByName`, `JSONSchemaTool` |
+| `@vinkius/connect/openai-agents` | `toOpenAIAgentsTools`, `OpenAIAgentsToolFactory`, `ToOpenAIAgentsOptions` |
+| `@vinkius/connect/llamaindex` | `toLlamaIndexTools`, `LlamaIndexToolFactory`, `ToLlamaIndexOptions` |
+| `@vinkius/connect/workers-ai` | `toWorkersAITools`, `WorkersAITool` |
+| `@vinkius/connect/package.json` | Metadatos del paquete |
+
+El paquete publica puntos de entrada ESM y CommonJS, declara que no tiene efectos secundarios y requiere Node.js 18 o posterior.
+
+## Cree un cliente
+
+```typescript
+new Vinkius(options: VinkiusOptions)
+```
+
+```typescript
+interface VinkiusOptions {
+  appId: string;
+  apiKey: string;
+  baseUrl?: string;
+  timeoutMs?: number;
+  maxRetries?: number;
+  fetch?: typeof globalThis.fetch;
+  userAgent?: string;
+  hooks?: Hooks;
+  namespaceCapability?: (connector: string, name: string) => string;
+}
+```
+
+| Opción | Predeterminado | Comportamiento |
+| --- | --- | --- |
+| `appId` | Obligatorio | Debe ser un string que empiece por `vk_app_`, pero no por `vk_app_sk_`. Se envía como `x-vinkius-app-id`. |
+| `apiKey` | Obligatorio | Debe ser un string que empiece por `vk_app_sk_`. Se envía como token Bearer. Mantenlo en el servidor. |
+| `baseUrl` | `https://api.vinkius.com` | Se analiza como URL y se normaliza sin barras finales. Una URL no válida lanza `ConfigError`. Un `http://` no local genera una advertencia en la consola, pero no se rechaza. |
+| `timeoutMs` | `30000` | Timeout de la parte `fetch` de cada intento. No es un plazo límite para la operación completa. |
+| `maxRetries` | `2` | Número máximo de intentos adicionales para solicitudes que pueden reintentarse de forma segura. |
+| `fetch` | `globalThis.fetch` | Implementación de fetch personalizada. Si falta la función global o la personalizada, se lanza `ConfigError`. |
+| `userAgent` | — | Se añade al user agent del SDK. |
+| `hooks` | — | Callbacks síncronos y redactados de solicitud y respuesta. |
+| `namespaceCapability` | ``(connector, name) => `${connector}__${name}` `` | Produce el nombre de visualización de cada capacidad. |
+
+El constructor valida la configuración y crea dos handles de bajo nivel que no realizan solicitudes:
+
+```typescript
+class Vinkius {
+  readonly catalog: CatalogClient;
+  readonly users: AppUsersClient;
+
+  constructor(options: VinkiusOptions);
+  user(externalId: string): UserContext;
+}
+```
+
+Las solicitudes incluyen `Authorization: Bearer <apiKey>`, `x-vinkius-app-id`, `Accept: application/json` y el user agent del SDK. Las solicitudes con cuerpo también incluyen `Content-Type: application/json`.
+
+### Cree un handle de usuario perezoso
+
+```typescript
+const user = vinkius.user('alice_123');
+```
+
+`user()` no realiza ninguna solicitud. `externalId` debe ser el ID de usuario estable de tu aplicación, no un ID interno de Vinkius que empiece por `vk_app_user_`. Debe contener entre 1 y 255 caracteres y no puede contener espacios en blanco, `/` ni `\`. Los valores no válidos lanzan `ConfigError`.
+
+## Opciones de solicitud
+
+La mayoría de los métodos que realizan solicitudes aceptan `RequestOptions`. La ejecución de capacidades acepta `ExecuteOptions`.
+
+```typescript
+interface RequestOptions {
+  signal?: AbortSignal;
+}
+
+interface ExecuteOptions extends RequestOptions {
+  idempotencyKey?: string;
+}
+```
+
+`UserContext.ensure(metadata?)` es la excepción: no acepta `RequestOptions`. Los helpers de despacho de los adaptadores y los callbacks generados por adaptadores tampoco aceptan `ExecuteOptions`.
+
+Usa una `idempotencyKey` estable y no vacía para la misma ejecución lógica de una capacidad:
+
+```typescript
+await capability.execute(args, {
+  signal: abortController.signal,
+  idempotencyKey: `create-issue:${jobId}`,
+});
+```
+
+Reutiliza la clave cuando repitas manualmente esa misma operación lógica. No la reutilices para una operación diferente. Un string vacío no es válido en la práctica: el cliente actual considera que un string vacío definido habilita los reintentos, pero no envía un encabezado `Idempotency-Key`.
+
+## API fluida
+
+### Resolución perezosa
+
+La jerarquía fluida es perezosa:
+
+```typescript
+const user = vinkius.user('alice_123');
+const connector = user.connector('github');
+const credentials = connector.credentials;
+```
+
+Estas instrucciones no realizan solicitudes. Un `Connector` solo resuelve su conexión cuando una operación la necesita. La resolución lista las conexiones del usuario y compara tanto `connection.slug` como `connection.id` con el `slug` del handle. El ID de conexión resuelto se memoiza únicamente en ese handle. Los handles nuevos se resuelven de forma independiente; no hay una caché de resolución compartida en el cliente.
+
+`connect()` almacena el ID de conexión devuelto. `disconnect()` lo elimina después de borrar la conexión.
+
+### `UserContext`
+
+```typescript
+class UserContext {
+  readonly externalId: string;
+
+  ensure(metadata?: Record<string, unknown>): Promise<AppUser>;
+  get(options?: RequestOptions): Promise<AppUser>;
+  connector(slug: string): Connector;
+  connectors(options?: RequestOptions): Promise<ConnectorSummary[]>;
+  capabilities(options?: CapabilityQuery): Promise<CapabilitySet>;
+}
+```
+
+#### Asegurar u obtener un usuario
+
+```typescript
+await user.ensure({ plan: 'pro' }); // Sin parámetro RequestOptions.
+const resource = await user.get({ signal });
+```
+
+`ensure()` realiza el upsert idempotente del usuario. Llamar solo a `user()` no crea un usuario.
+
+#### Listar conectores conectados
+
+```typescript
+const connectors = await user.connectors({ signal });
+```
+
+Esto devuelve únicamente las conexiones existentes. Cada resultado es:
+
+```typescript
+interface ConnectorSummary {
+  slug: string;
+  status: ConnectorStatus;
+  connectionId?: string;
+}
+```
+
+El slug del resumen es `connection.slug` cuando está presente; de lo contrario, es `connection.name`.
+
+#### Listar capacidades de varios conectores
+
+```typescript
+interface CapabilityQuery extends RequestOptions {
+  include?: string[];
+  exclude?: string[];
+}
+
+const capabilities = await user.capabilities({
+  include: ['github', 'slack'],
+  exclude: ['slack'],
+  signal,
+});
+```
+
+Un array `include` no vacío se envía al servidor como un único valor de consulta `connector` separado por comas. Un array `exclude` no vacío se aplica en el cliente después de la respuesta. Las capacidades devueltas son ejecutables y contienen el conector y el ID de conexión proporcionados por el endpoint agregado.
+
+### `Connector`
+
+```typescript
+class Connector {
+  readonly slug: string;
+  readonly credentials: CredentialsHandle;
+
+  connect(options?: RequestOptions): Promise<Connection>;
+  disconnect(options?: RequestOptions): Promise<void>;
+  status(options?: RequestOptions): Promise<ConnectorStatus>;
+  capabilities(options?: RequestOptions): Promise<CapabilitySet>;
+}
+```
+
+```typescript
+const github = user.connector('github'); // Perezoso.
+const connection = await github.connect(); // Obtener o crear.
+const status = await github.status();
+const capabilities = await github.capabilities();
+await github.disconnect();
+```
+
+`connect()` permite reintentos de forma explícitamente segura y memoiza el ID de conexión devuelto. `status()` devuelve `not_connected` en vez de lanzar una excepción cuando no existe una conexión. `disconnect()` y `capabilities()` requieren una conexión y lanzan `ConnectorNotConnectedError` cuando la resolución no encuentra ninguna.
+
+`ConnectorStatus` se deriva de la siguiente forma:
+
+| Valor | Condición |
+| --- | --- |
+| `not_connected` | No existe ninguna conexión coincidente. |
+| `ready` | `connection.status === 'active'` y `connection.ready === true`. |
+| `needs_credentials` | `connection.status === 'active'` y `connection.ready !== true`. |
+| `disabled` | `connection.status !== 'active'`. |
+
+### `CredentialsHandle`
+
+```typescript
+class CredentialsHandle {
+  schema(options?: RequestOptions): Promise<CredentialSchema>;
+  status(options?: RequestOptions): Promise<CredentialStatus>;
+  set(
+    values: Record<string, string>,
+    options?: RequestOptions,
+  ): Promise<CredentialStatus>;
+}
+```
+
+```typescript
+const github = user.connector('github');
+
+const schema = await github.credentials.schema(); // No requiere una conexión.
+await github.connect();
+const status = await github.credentials.set({
+  GITHUB_TOKEN: process.env.GITHUB_TOKEN!,
+});
+```
+
+`schema()` lee la entrada del catálogo y no requiere una conexión existente. `status()` y `set()` nunca conectan implícitamente. Primero resuelven una conexión existente y lanzan `ConnectorNotConnectedError` cuando no hay ninguna.
+
+Los valores de las credenciales son de solo escritura. Las respuestas de credenciales contienen un esquema y valores booleanos para las claves configuradas, nunca los valores de las credenciales:
+
+```typescript
+interface CredentialStatus {
+  schema: CredentialSchema;
+  configured: Record<string, boolean>;
+}
+```
+
+El método fluido `set()` acepta un mapa plano y lo envuelve en el objeto de bajo nivel `{ credentials: values }`. El cliente no valida los valores con el esquema antes de enviarlos.
+
+## Capacidades
+
+### `CapabilitySet`
+
+`CapabilitySet` extiende `Array<Capability>`. Están disponibles los métodos estándar de los arrays.
+
+```typescript
+class CapabilitySet extends Array<Capability> {
+  static fromCapabilities(
+    capabilities: readonly Capability[],
+  ): CapabilitySet;
+
+  forConnector(slug: string): CapabilitySet;
+  findCapability(name: string): Capability | undefined;
+}
+```
+
+`forConnector()` usa una coincidencia exacta con el slug del conector. `findCapability()` devuelve la primera coincidencia exacta con el nombre de visualización con namespace o con el nombre del conector en bruto.
+
+Los nombres en bruto pueden colisionar entre conectores. Prefiere los nombres de visualización o limita primero el alcance:
+
+```typescript
+const issue = capabilities
+  .forConnector('github')
+  .findCapability('create_issue');
+```
+
+Un `namespaceCapability` personalizado también puede producir nombres de visualización duplicados. `findCapability()` sigue devolviendo la primera coincidencia. Convierte las capacidades únicamente en el límite del [adaptador del framework](/es/adapters/overview).
+
+### `Capability`
+
+```typescript
+class Capability {
+  readonly connector: string;
+  readonly connectionId: string;
+  readonly name: string;
+  readonly rawName: string;
+  readonly title: string | null;
+  readonly description: string;
+  readonly inputSchema: JSONSchema;
+
+  execute(
+    args?: Record<string, unknown>,
+    options?: ExecuteOptions,
+  ): Promise<CapabilityResult>;
+}
+```
+
+| Propiedad | Significado |
+| --- | --- |
+| `connector` | Slug del conector asociado con la capacidad. |
+| `connectionId` | Conexión utilizada para enrutar la ejecución. |
+| `name` | Nombre de visualización producido por `namespaceCapability`. |
+| `rawName` | Nombre expuesto por el conector y enviado para la ejecución. |
+| `title` | Título opcional, normalizado a `null`. |
+| `description` | Descripción, normalizada a un string vacío cuando no está presente. |
+| `inputSchema` | JSON Schema de entrada, normalizado a `{}` cuando no está presente. |
+
+```typescript
+const capability = capabilities.findCapability('github__create_issue');
+if (!capability) throw new Error('Capability not available');
+
+const result = await capability.execute(
+  { owner: 'acme', repo: 'product', title: 'Ship it' },
+  { idempotencyKey: 'create-issue:job-42' },
+);
+```
+
+La ejecución siempre se enruta con `connectionId` y `rawName`, no con el nombre de visualización.
+
+```typescript
+interface CapabilityResult {
+  content: Array<{ type: string; text: string }>;
+  isError: boolean;
+}
+```
+
+`isError: true` es un resultado de capacidad devuelto, no una excepción lanzada. Los fallos HTTP, de transporte, de configuración, de resolución del conector y de despacho del adaptador sí pueden lanzar excepciones.
+
+`Capability` se exporta, pero la interfaz de inicialización de su constructor no es un export del paquete. Trata las capacidades como objetos producidos por el SDK en vez de construirlas manualmente.
+
+## Clientes de bajo nivel
+
+Usa las instancias y fábricas expuestas:
+
+```typescript
+const catalog = vinkius.catalog;
+const users = vinkius.users;
+const connections = users.connections('alice_123');
+const credentials = connections.credentials(connectionId);
+const execution = connections.execution(connectionId);
+```
+
+Las llamadas a fábricas no realizan solicitudes. Los métodos de bajo nivel devuelven recursos o formas de capacidad sin procesar, en lugar de handles fluidos, salvo que se indique lo contrario.
+
+### `CatalogClient`
+
+```typescript
+class CatalogClient {
+  list(
+    options?: { page?: number } & RequestOptions,
+  ): Promise<Paginated<CatalogConnector>>;
+
+  get(
+    slug: string,
+    options?: RequestOptions,
+  ): Promise<CatalogConnectorDetail>;
+
+  search(
+    query: string,
+    options?: RequestOptions,
+  ): Promise<CatalogConnector[]>;
+}
+```
+
+```typescript
+const page = await vinkius.catalog.list({ page: 1, signal });
+const github = await vinkius.catalog.get('github');
+const matches = await vinkius.catalog.search('source control');
+```
+
+`list()` usa paginación por páginas. `get()` acepta un slug de conector o un ID de catálogo y devuelve `credential_schema`. `search()` envía `q` y devuelve el array de datos normalizado. El filtrado depende de que el servidor admita `q`; si el servidor lo ignora, `search()` puede comportarse como `list()`.
+
+### `AppUsersClient`
+
+```typescript
+class AppUsersClient {
+  create(
+    input: CreateAppUserInput,
+    options?: RequestOptions,
+  ): Promise<AppUser>;
+
+  get(externalId: string, options?: RequestOptions): Promise<AppUser>;
+
+  update(
+    externalId: string,
+    patch: UpdateAppUserInput,
+    options?: RequestOptions,
+  ): Promise<AppUser>;
+
+  delete(externalId: string, options?: RequestOptions): Promise<void>;
+
+  list(
+    options?: { status?: string; page?: number } & RequestOptions,
+  ): Promise<Paginated<AppUser>>;
+
+  capabilities(
+    externalId: string,
+    options?: { connectors?: string[] } & RequestOptions,
+  ): Promise<CapabilityData[]>;
+
+  connections(externalId: string): ConnectionsClient;
+}
+```
+
+`create()` es un upsert por ID externo que permite reintentos de forma explícitamente segura. `capabilities()` devuelve `CapabilityData[]` sin procesar, no objetos `Capability` ejecutables. Usa `user.capabilities()` para obtener la forma fluida ejecutable.
+
+### `ConnectionsClient`
+
+```typescript
+class ConnectionsClient {
+  list(options?: RequestOptions): Promise<Connection[]>;
+
+  create(
+    input: CreateConnectionInput,
+    options?: RequestOptions,
+  ): Promise<Connection>;
+
+  get(
+    connectionId: string,
+    options?: RequestOptions,
+  ): Promise<Connection>;
+
+  delete(
+    connectionId: string,
+    options?: RequestOptions,
+  ): Promise<void>;
+
+  credentials(connectionId: string): CredentialsClient;
+  execution(connectionId: string): ExecutionClient;
+}
+```
+
+```typescript
+const connections = vinkius.users.connections('alice_123');
+const connection = await connections.create({ connector: 'github' });
+```
+
+`create()` es una operación get-or-create que permite reintentos de forma explícitamente segura. `list()` devuelve un array simple.
+
+### `CredentialsClient`
+
+```typescript
+class CredentialsClient {
+  status(options?: RequestOptions): Promise<CredentialStatus>;
+
+  set(
+    input: SetCredentialsInput,
+    options?: RequestOptions,
+  ): Promise<CredentialStatus>;
+}
+
+interface SetCredentialsInput {
+  credentials: Record<string, string>;
+}
+```
+
+El método de bajo nivel requiere el objeto que el handle fluido añade por ti:
+
+```typescript
+await connections.credentials(connection.id).set({
+  credentials: { GITHUB_TOKEN: process.env.GITHUB_TOKEN! },
+});
+```
+
+### `ExecutionClient`
+
+```typescript
+class ExecutionClient {
+  list(options?: RequestOptions): Promise<CapabilityData[]>;
+
+  execute(
+    input: ExecuteCapabilityInput,
+    options?: ExecuteOptions,
+  ): Promise<CapabilityResult>;
+}
+
+interface ExecuteCapabilityInput {
+  name: string;
+  arguments?: Record<string, unknown>;
+}
+```
+
+`name` es el nombre en bruto de la capacidad del conector.
+
+```typescript
+const result = await connections.execution(connection.id).execute(
+  {
+    name: 'create_issue',
+    arguments: { title: 'Ship it' },
+  },
+  { idempotencyKey: 'create-issue:job-42', signal },
+);
+```
+
+Este es el único método de bajo nivel que acepta `ExecuteOptions`.
+
+## Tipos de entrada y recursos
+
+### Tipos de entrada de bajo nivel
+
+```typescript
+interface CreateAppUserInput {
+  external_id: string;
+  status?: string;
+  metadata?: Record<string, unknown>;
+}
+
+interface UpdateAppUserInput {
+  status?: string;
+  metadata?: Record<string, unknown>;
+}
+
+interface CreateConnectionInput {
+  connector: string;
+}
+
+interface SetCredentialsInput {
+  credentials: Record<string, string>;
+}
+
+interface ExecuteCapabilityInput {
+  name: string;
+  arguments?: Record<string, unknown>;
+}
+```
+
+### Tipos de usuario, conexión y catálogo
+
+```typescript
+type ISODate = string;
+type JSONSchema = Record<string, unknown>;
+
+interface AppUser {
+  id: string;
+  external_id: string;
+  status: string;
+  metadata: Record<string, unknown> | null;
+  application_id?: string;
+  mcp_count?: number;
+  created_at: ISODate;
+  updated_at: ISODate;
+}
+
+interface Connection {
+  id: string;
+  slug: string | null;
+  name: string;
+  description: string | null;
+  status: string;
+  ready: boolean;
+  tokens_count?: number;
+  created_at: ISODate;
+}
+
+interface CatalogConnector {
+  id: string;
+  slug: string;
+  title: string;
+  short_description: string | null;
+  publisher_type: string;
+  listing_type: string;
+  requires_buyer_auth: boolean;
+  server_type?: string;
+  tools_count?: number;
+}
+
+interface CatalogConnectorDetail extends CatalogConnector {
+  credential_schema: CredentialSchema;
+}
+```
+
+### Tipos de credenciales
+
+```typescript
+type CredentialType =
+  | 'api_key'
+  | 'token'
+  | 'password'
+  | 'connection_string'
+  | 'string'
+  | 'number'
+  | 'email'
+  | 'url'
+  | 'select'
+  | 'boolean'
+  | 'oauth2';
+
+interface CredentialField {
+  type: CredentialType;
+  label?: string;
+  required?: boolean;
+  group?: string;
+  docs_url?: string;
+  placeholder?: string;
+  allowed?: string[];
+}
+
+type CredentialSchema = Record<string, CredentialField>;
+```
+
+### Tipos de capacidad sin procesar y paginación
+
+```typescript
+interface CapabilityData {
+  name: string;
+  title?: string | null;
+  description?: string | null;
+  input_schema?: JSONSchema | null;
+  annotations?: unknown;
+  connector?: string;
+  connection_id?: string;
+}
+
+interface Paginated<T> {
+  data: T[];
+  meta?: PageMeta;
+  links?: PageLinks;
+}
+
+interface PageMeta {
+  current_page: number;
+  from: number | null;
+  last_page: number;
+  path: string;
+  per_page: number;
+  to: number | null;
+  total: number;
+}
+
+interface PageLinks {
+  first: string | null;
+  last: string | null;
+  prev: string | null;
+  next: string | null;
+}
+```
+
+Los endpoints de listas simples aceptan un array sin envolver o un objeto con `data`; las formas inesperadas se normalizan a un array vacío. Los endpoints paginados esperan `{ data, meta?, links? }`, normalizan un campo `data` ausente o que no sea un array a un array vacío y conservan los valores truthy de `meta` y `links`. La normalización de elementos usa `data` cuando está presente.
+
+## Hooks y redacción
+
+```typescript
+interface Hooks {
+  onRequest?: (info: {
+    method: string;
+    url: string;
+    headers: Record<string, string>;
+  }) => void;
+
+  onResponse?: (info: {
+    status: number;
+    url: string;
+    requestId?: string;
+    body: unknown;
+  }) => void;
+}
+```
+
+```typescript
+const vinkius = new Vinkius({
+  appId,
+  apiKey,
+  hooks: {
+    onRequest({ method, url, headers }) {
+      logger.debug({ method, url, headers });
+    },
+    onResponse({ status, url, requestId, body }) {
+      logger.debug({ status, url, requestId, body });
+    },
+  },
+});
+```
+
+Los hooks se ejecutan de forma síncrona. Si un hook lanza una excepción, esta se propaga y detiene el flujo de la solicitud.
+
+### Hook de solicitud
+
+`onRequest` se ejecuta antes de cada intento. Recibe la URL completa de la solicitud y una copia del mapa de encabezados. No recibe el cuerpo de la solicitud. Los valores de la URL no se redactan por separado.
+
+Los nombres de encabezados se comparan de forma exacta, sin distinguir mayúsculas y minúsculas. Estos valores se convierten en `[REDACTED]`:
+
+- `authorization`
+- `idempotency-key`
+- `cookie`
+- `set-cookie`
+
+Ningún otro nombre de encabezado se redacta mediante heurísticas.
+
+### Hook de respuesta
+
+`onResponse` se ejecuta en cada intento que devuelve una respuesta HTTP, incluida una respuesta transitoria que se reintentará. No se ejecuta ante un fallo de fetch o un timeout sin respuesta. Un cuerpo vacío es `undefined`; el JSON válido se analiza; el texto que no es JSON permanece como string.
+
+Las claves de los objetos de respuesta se comparan de forma exacta, sin distinguir mayúsculas y minúsculas. Estos valores se convierten en `[REDACTED]`:
+
+- `authorization`
+- `apikey`
+- `api_key`
+- `token`
+- `access_token`
+- `refresh_token`
+- `mcp_url`
+- `credentials`
+- `password`
+- `secret`
+- `client_secret`
+
+No hay detección de secretos por substring ni por forma. Los objetos encontrados en la profundidad 6 se convierten en `[TRUNCATED]`. Las referencias repetidas o circulares a objetos se convierten en `[CIRCULAR]`. Los arrays se recorren.
+
+La redacción crea una copia para los hooks. No reescribe `VinkiusError.details`, que recibe el cuerpo original del error de API ya analizado.
+
+## Timeouts, reintentos e idempotencia
+
+### Alcance del timeout
+
+Cada intento recibe un nuevo temporizador `timeoutMs`. El temporizador cubre la promesa de `fetch`. Se borra antes de leer el cuerpo de la respuesta y no cubre `response.text()` ni la espera entre reintentos. Por tanto, los reintentos no comparten un único plazo límite total.
+
+Pasa `signal` para permitir que el llamador controle la cancelación. Un aborto del llamador durante fetch no se reintenta y normalmente se convierte en `ConnectionError`. La espera entre reintentos también respeta la señal del llamador.
+
+### Política de reintentos
+
+Con los valores predeterminados, una operación que puede reintentarse de forma segura realiza como máximo tres intentos: uno inicial y dos reintentos.
+
+Una operación puede reintentarse de forma segura cuando se cumple cualquiera de estas condiciones:
+
+- Su método HTTP es `GET`, `PUT` o `DELETE`.
+- El SDK la marca explícitamente como segura para reintentos: creación de usuario, creación de conexión o ejecución de una capacidad con una `idempotencyKey` definida.
+
+Las operaciones que permiten reintentos seguros vuelven a intentarse después de:
+
+- Un error de red.
+- Un timeout por intento.
+- Un estado HTTP `429`, `502`, `503` o `504`.
+
+Las solicitudes `PATCH` y `POST` ordinarias no se reintentan. La ejecución de una capacidad sin una clave de idempotencia realiza un solo intento.
+
+La espera usa full jitter sobre una ventana exponencial: 250 ms al principio, con un límite de 4.000 ms. `Retry-After` acepta segundos delta o una fecha HTTP y tiene prioridad, también con un límite de 4.000 ms. `maxRetries` cambia la cantidad de reintentos, no estos valores de espera.
+
+El cuerpo y los encabezados de la solicitud se construyen una sola vez por llamada al SDK, por lo que los reintentos automáticos reutilizan el mismo cuerpo y la misma clave de idempotencia no vacía.
+
+## Errores e identificadores de solicitud
+
+### Jerarquía de errores
+
+```typescript
+class VinkiusError extends Error {
+  readonly status: number;
+  readonly code: VinkiusErrorCode;
+  readonly requestId: string | undefined;
+  readonly details: unknown;
+}
+```
+
+Los errores del cliente y de transporte usan el estado `0`. Los fallos HTTP terminales incluyen la respuesta de API analizada en `details`. El mensaje de error se selecciona a partir de un campo `message` de la respuesta, un campo `error`, el primer elemento de contenido de texto, un cuerpo de texto simple o un mensaje alternativo basado en el estado.
+
+| Clase | `code` | Origen | Campos adicionales |
+| --- | --- | --- | --- |
+| `ConfigError` | `config_error` | Configuración del cliente o ID externo no válidos | — |
+| `AuthError` | `auth_error` | HTTP 401 o 403 | — |
+| `NotFoundError` | `not_found` | HTTP 404 | — |
+| `ValidationError` | `validation_error` | HTTP 422 | `errors: Record<string, string[]>` |
+| `RateLimitError` | `rate_limit` | HTTP 429 sin la forma de cuota de capacidad | `retryAfterMs?: number` |
+| `QuotaError` | `quota_exceeded` | HTTP 429 con `isError: true` o una `upgrade_url` | `upgradeUrl?: string` |
+| `OverageError` | `overage_blocked` | HTTP 402 | `upgradeUrl?: string` |
+| `ConnectorNotConnectedError` | `connector_not_connected` | Una operación fluida requiere una conexión ausente | — |
+| `NotImplementedError` | `not_implemented` | Clase de error exportada | — |
+| `ConnectionError` | `connection_error` | Fallo de red, timeout o aborto del llamador durante fetch | — |
+| `VinkiusError` | `api_error` | Otro estado HTTP que no sea exitoso | — |
+
+`NotImplementedError` se exporta, pero no hay ningún sitio en la implementación del cliente que la lance. No dependas de que un método concreto la lance.
+
+No todos los fallos son un `VinkiusError`:
+
+- Los helpers de despacho de OpenAI, Anthropic, Gemini y JSON Schema lanzan un `Error` simple cuando el nombre de la capacidad es desconocido.
+- Un hook, una función de namespace personalizada, la serialización JSON, una fábrica inyectada de adaptador u otro código proporcionado por el usuario pueden lanzar su propio error.
+- Abortar durante la espera entre reintentos puede propagar directamente el motivo de aborto de la señal.
+- Un fallo en el nivel de la capacidad puede devolver un `CapabilityResult` con `isError: true` en vez de lanzar una excepción.
+
+Usa `instanceof VinkiusError` antes de leer los campos de error del SDK:
+
+```typescript
+import { VinkiusError } from '@vinkius/connect';
+
+try {
+  await capability.execute(args);
+} catch (error) {
+  if (error instanceof VinkiusError) {
+    console.error(error.code, error.status, error.requestId);
+  } else {
+    throw error;
+  }
+}
+```
+
+Consulta [Manejo de errores](/es/guides/error-handling) para ver patrones de flujo de control.
+
+### `requestId`
+
+Para las respuestas HTTP, el cliente lee el primer ID de solicitud no vacío en este orden:
+
+1. `x-request-id`
+2. `x-vinkius-request-id`
+
+El valor se pasa a `onResponse` y se adjunta al error HTTP final mapeado. Los recursos devueltos con éxito no lo incluyen a menos que el propio esquema del recurso lo contenga; usa `onResponse` para observar los IDs de solicitud de llamadas exitosas. Los errores del cliente y de transporte normalmente no tienen un ID de solicitud.
+
+## `ResolverCache`
+
+`ResolverCache` es una caché TTL en memoria e independiente para datos estables que no sean secretos. El cliente no la usa internamente.
+
+```typescript
+class ResolverCache {
+  constructor(ttlMs?: number); // Predeterminado: 5 minutos.
+
+  get<V>(key: string): V | undefined;
+  set<V>(key: string, value: V): void;
+  delete(key: string): void;
+  clear(): void;
+  resolve<V>(key: string, compute: () => Promise<V>): Promise<V>;
+}
+```
+
+```typescript
+import { ResolverCache } from '@vinkius/connect';
+
+const cache = new ResolverCache(10 * 60 * 1000);
+const schema = await cache.resolve('github:schema', () =>
+  user.connector('github').credentials.schema(),
+);
+```
+
+Las entradas expiradas se eliminan al llamar a `get()`. `resolve()` calcula y almacena un valor ausente solo después de que la promesa se resuelva correctamente. Los rechazos no se almacenan en caché y los misses simultáneos no se agrupan. Un `undefined` almacenado no se distingue de un miss.
+
+No almacenes en caché credenciales, tokens, encabezados de autorización ni otros secretos. La caché es una optimización, no una fuente de autorización.
+
+## Referencia de adaptadores
+
+Todos los adaptadores aceptan `readonly Capability[]` y usan los nombres de visualización de las capacidades en las definiciones generadas. Un esquema de entrada vacío se normaliza a:
+
+```typescript
+{ type: 'object', properties: {} }
+```
+
+Los adaptadores no validan localmente los argumentos de las capacidades. La validación corresponde al servicio llamado. Los helpers de despacho de los adaptadores y los callbacks de ejecución generados llaman a `capability.execute(args)` sin `ExecuteOptions`; no pueden recibir una señal ni una clave de idempotencia. Llama directamente a `Capability.execute(args, options)` o `ExecutionClient.execute(input, options)` cuando necesites cancelación o una ejecución que permita reintentos seguros.
+
+### OpenAI Chat Completions
+
+```typescript
+import {
+  toOpenAITools,
+  runOpenAIToolCall,
+  type OpenAIFunctionTool,
+  type OpenAIToolCall,
+} from '@vinkius/connect/openai';
+
+const tools = toOpenAITools(capabilities);
+const result = await runOpenAIToolCall(capabilities, toolCall);
+```
+
+```typescript
+function toOpenAITools(
+  capabilities: readonly Capability[],
+): OpenAIFunctionTool[];
+
+function runOpenAIToolCall(
+  capabilities: readonly Capability[],
+  call: OpenAIToolCall,
+): Promise<CapabilityResult>;
+```
+
+El helper de despacho solo compara el nombre de visualización. Los strings de argumentos JSON vacíos, malformados, `null` o primitivos se convierten en `{}`. Un nombre desconocido lanza un `Error` simple.
+
+### Anthropic
+
+```typescript
+import {
+  toAnthropicTools,
+  runAnthropicToolUse,
+} from '@vinkius/connect/anthropic';
+```
+
+```typescript
+function toAnthropicTools(
+  capabilities: readonly Capability[],
+): AnthropicTool[];
+
+function runAnthropicToolUse(
+  capabilities: readonly Capability[],
+  use: AnthropicToolUse,
+): Promise<CapabilityResult>;
+```
+
+El helper de despacho solo compara el nombre de visualización. Un nombre desconocido lanza un `Error` simple.
+
+### Vercel AI SDK
+
+```typescript
+import { jsonSchema } from 'ai';
+import { toAISDKTools } from '@vinkius/connect/ai-sdk';
+
+const tools = toAISDKTools(capabilities, { jsonSchema });
+```
+
+```typescript
+interface ToAISDKOptions {
+  jsonSchema?: (schema: JSONSchema) => unknown;
+}
+
+function toAISDKTools(
+  capabilities: readonly Capability[],
+  options?: ToAISDKOptions,
+): Record<string, AISDKTool>;
+```
+
+El resultado está indexado por nombre de visualización. Un nombre de visualización duplicado sobrescribe la entrada anterior. El wrapper `jsonSchema` inyectado es opcional; sin él, `parameters` es el JSON Schema normalizado sin procesar. Cada `execute(args)` generado devuelve `CapabilityResult`.
+
+### Gemini
+
+```typescript
+import {
+  toGeminiTools,
+  runGeminiFunctionCall,
+} from '@vinkius/connect/gemini';
+```
+
+```typescript
+function toGeminiTools(
+  capabilities: readonly Capability[],
+): GeminiFunctionDeclaration[];
+
+function runGeminiFunctionCall(
+  capabilities: readonly Capability[],
+  call: GeminiFunctionCall,
+): Promise<CapabilityResult>;
+```
+
+El helper de despacho solo compara el nombre de visualización. Si faltan los argumentos, se usa `{}`. Un nombre desconocido lanza un `Error` simple.
+
+### LangChain.js
+
+```typescript
+import { tool } from '@langchain/core/tools';
+import { toLangChainTools } from '@vinkius/connect/langchain';
+
+const tools = toLangChainTools(capabilities, { tool });
+```
+
+```typescript
+type LangChainToolFactory<T> = (
+  fn: (input: Record<string, unknown>) => Promise<string>,
+  config: {
+    name: string;
+    description: string;
+    schema: JSONSchema;
+  },
+) => T;
+
+function toLangChainTools<T>(
+  capabilities: readonly Capability[],
+  options: { tool: LangChainToolFactory<T> },
+): T[];
+```
+
+El adaptador no tiene una dependencia de runtime de LangChain. Requiere la fábrica `tool` del llamador. El callback generado une las partes de texto del resultado con `\n`; su valor de retorno no conserva el campo `isError` ni los tipos de las partes de contenido.
+
+### JSON Schema neutral
+
+```typescript
+import {
+  toJSONSchemaTools,
+  executeByName,
+} from '@vinkius/connect/json-schema';
+
+const tools = toJSONSchemaTools(capabilities);
+const result = await executeByName(capabilities, 'github__create_issue', args);
+```
+
+```typescript
+function toJSONSchemaTools(
+  capabilities: readonly Capability[],
+): JSONSchemaTool[];
+
+function executeByName(
+  capabilities: readonly Capability[],
+  name: string,
+  args?: Record<string, unknown>,
+): Promise<CapabilityResult>;
+```
+
+`executeByName()` compara tanto el nombre de visualización como el nombre en bruto y devuelve la primera coincidencia. Por tanto, las colisiones de nombres en bruto son ambiguas. Un nombre desconocido lanza un `Error` simple.
+
+### OpenAI Agents SDK
+
+```typescript
+import { tool } from '@openai/agents';
+import { toOpenAIAgentsTools } from '@vinkius/connect/openai-agents';
+
+const tools = toOpenAIAgentsTools(capabilities, { tool });
+```
+
+```typescript
+type OpenAIAgentsToolFactory<T> = (config: {
+  name: string;
+  description: string;
+  parameters: JSONSchema;
+  strict: boolean;
+  execute: (args: Record<string, unknown>) => Promise<string>;
+}) => T;
+
+function toOpenAIAgentsTools<T>(
+  capabilities: readonly Capability[],
+  options: { tool: OpenAIAgentsToolFactory<T> },
+): T[];
+```
+
+Este punto de entrada es independiente de `@vinkius/connect/openai`. Requiere la fábrica `tool` del llamador, pasa JSON Schema normalizado sin procesar y establece `strict: false`. El callback generado une las partes de texto del resultado con `\n` y no conserva `isError` ni los tipos de las partes de contenido en su valor de retorno.
+
+### LlamaIndex.TS
+
+```typescript
+import { tool } from 'llamaindex';
+import { toLlamaIndexTools } from '@vinkius/connect/llamaindex';
+
+const tools = toLlamaIndexTools(capabilities, { tool });
+```
+
+```typescript
+type LlamaIndexToolFactory<T> = (
+  fn: (input: Record<string, unknown>) => Promise<string>,
+  config: {
+    name: string;
+    description: string;
+    parameters: JSONSchema;
+  },
+) => T;
+
+function toLlamaIndexTools<T>(
+  capabilities: readonly Capability[],
+  options: { tool: LlamaIndexToolFactory<T> },
+): T[];
+```
+
+El adaptador requiere la fábrica `tool` del llamador. El callback generado une las partes de texto del resultado con `\n` y no conserva `isError` ni los tipos de las partes de contenido en su valor de retorno.
+
+### Cloudflare Workers AI
+
+```typescript
+import { toWorkersAITools } from '@vinkius/connect/workers-ai';
+
+const tools = toWorkersAITools(capabilities);
+```
+
+```typescript
+interface WorkersAITool {
+  name: string;
+  description: string;
+  parameters: JSONSchema;
+  function: (args: Record<string, unknown>) => Promise<string>;
+}
+
+function toWorkersAITools(
+  capabilities: readonly Capability[],
+): WorkersAITool[];
+```
+
+Este adaptador devuelve objetos simples con funciones de ejecución vinculadas. Cada función une las partes de texto del resultado con `\n` y no conserva `isError` ni los tipos de las partes de contenido en su valor de retorno.
+
+## Próximos pasos
+
+- Elige un [adaptador de framework](/es/adapters/overview).
+- Sigue los patrones de flujo de control de [Manejo de errores](/es/guides/error-handling).
+- Consulta el [uso de TypeScript](/es/guides/typescript).

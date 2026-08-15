@@ -1,0 +1,92 @@
+---
+title: De conectores com escopo por usuário a capacidades executáveis
+description: Entenda o fluxo do Connect SDK desde um usuário autenticado da aplicação até ações que o código ou um modelo pode executar.
+---
+
+O Vinkius Connect SDK oferece ao seu backend uma única API para configurar conectores de serviços externos por usuário da aplicação e recuperar as ações expostas por essas conexões. Seu código pode executar uma ação diretamente ou converter os mesmos objetos de capacidade para o formato estrutural de ferramentas usado por um runtime de modelo.
+
+O SDK não fornece um fluxo OAuth hospedado nem uma interface de credenciais. Sua aplicação é responsável por autenticação, autorização, coleta de credenciais e experiência do usuário; o SDK acessa a API do Vinkius e executa as capacidades retornadas.
+
+## O fluxo de ponta a ponta
+
+1. Derive um `externalId` estável da sessão autenticada.
+2. Crie um handle de conector lazy para esse usuário.
+3. Leia o schema de credenciais do conector e colete os valores necessários no fluxo do seu servidor.
+4. Crie a conexão e grave suas credenciais.
+5. Carregue as capacidades do usuário, opcionalmente restritas aos conectores selecionados.
+6. Execute uma capacidade diretamente ou converta-a na fronteira com o modelo.
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+
+const vinkius = new Vinkius({
+  appId: process.env.VINKIUS_APP_ID!,
+  apiKey: process.env.VINKIUS_APP_KEY!,
+});
+
+async function configureAndListActions(
+  externalId: string,
+  credentials: Record<string, string>,
+) {
+  const user = vinkius.user(externalId);
+  const connector = user.connector('github');
+
+  const schema = await connector.credentials.schema();
+  await connector.connect();
+  const credentialState = await connector.credentials.set(credentials);
+  const capabilities = await user.capabilities({ include: ['github'] });
+
+  return {
+    schema,
+    configured: credentialState.configured,
+    actions: capabilities.map(({ name, description }) => ({ name, description })),
+  };
+}
+```
+
+## Conector, conexão e capacidade
+
+| Termo | Significado | Exemplo |
+| --- | --- | --- |
+| Conector | Uma integração disponível no catálogo | `github` |
+| Conexão | Um conector configurado para um usuário da aplicação | Conexão da Alice com o GitHub |
+| Capacidade | Uma ação executável exposta por uma conexão | `github__create_issue` |
+
+`vinkius.user('alice_123')` e `.connector('github')` são handles. Criá-los não executa nenhuma requisição. Operações como `connect()`, `credentials.set()`, `capabilities()` e `execute()` atravessam a rede.
+
+## O escopo do usuário faz parte da rota
+
+Toda operação de usuário é endereçada tanto pelas credenciais da aplicação quanto pelo `externalId` passado pelo backend. Dois usuários podem conectar o mesmo conector e ainda manter estados de conexão e credenciais separados.
+
+Não aceite `externalId` como uma entrada irrestrita do cliente. Resolva-o a partir da sessão ou verifique se o chamador está autorizado a agir em nome dele antes de criar o handle.
+
+## Capacidades são a fronteira de execução
+
+Uma `Capability` contém:
+
+- um nome de exibição com namespace para consulta voltada ao modelo;
+- um nome bruto da ação do conector usado na execução;
+- uma descrição e um contrato de entrada em JSON Schema;
+- o conector e o ID da conexão necessários para rotear a requisição;
+- `execute(args, { signal, idempotencyKey })`.
+
+```typescript
+const capabilities = await vinkius.user('alice_123').capabilities();
+
+for (const capability of capabilities) {
+  console.log(capability.name, capability.inputSchema);
+}
+```
+
+Um `CapabilitySet` vazio é um resultado normal. Trate a disponibilidade das capacidades como dados de runtime, em vez de pressupor que todos os usuários têm as mesmas ferramentas.
+
+## Os adapters permanecem na fronteira com o modelo
+
+As capacidades principais não dependem de um provedor de modelos. Os subpaths dos adapters mapeiam seus nomes, descrições e schemas para formatos estruturais de provedores ou frameworks. O pacote do adapter não tem dependência de runtime desses frameworks externos, portanto sua aplicação continua responsável por escolher e testar uma versão compatível do framework.
+
+## Próximos passos
+
+- [Instale o SDK](/pt/getting-started/installation)
+- [Conecte uma conta e execute uma ação](/pt)
+- [Entenda o estado do conector](/pt/concepts/connectors)
+- [Escolha um adapter](/pt/adapters/overview)

@@ -1,0 +1,114 @@
+---
+title: Descripción general de los adaptadores
+description: Elige un adaptador por formato de herramienta, modelo de despacho y resultado de ejecución.
+---
+
+Los adaptadores convierten el `CapabilitySet` de un usuario en el límite entre Vinkius Connect y el runtime de tu modelo o agente. No obtienen capacidades ni ejecutan un modelo.
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+
+const vinkius = new Vinkius({
+  appId: 'vk_app_replace_me',
+  apiKey: 'vk_app_sk_replace_me',
+});
+
+const capabilities = await vinkius.user('user_123').capabilities();
+```
+
+`capabilities` extiende `Array<Capability>`. Cada capacidad incluye un nombre de visualización, un nombre de conector en bruto, una descripción, un JSON Schema de entrada, la identidad de la conexión y un método `execute()`. Pasa este mismo array a un adaptador cuando tu aplicación exponga herramientas a un runtime.
+
+## Elegir un adaptador
+
+| Stack                                                  | Subpath público                    | Formato convertido                                         | Dispatcher                                        | Retorno de ejecución | Pérdida de información                                  |
+| ------------------------------------------------------ | ---------------------------------- | ---------------------------------------------------------- | ------------------------------------------------- | -------------------- | ------------------------------------------------------- |
+| [OpenAI Chat Completions](/es/adapters/openai)         | `@vinkius/connect/openai`          | `OpenAIFunctionTool[]`                                     | `runOpenAIToolCall` por nombre de visualización   | `CapabilityResult`   | Ninguna                                                 |
+| [OpenAI Agents](/es/adapters/openai-agents)            | `@vinkius/connect/openai-agents`   | `T[]` de una fábrica `tool` inyectada                      | Callback `execute` vinculado                      | `string`             | Descarta `isError` y `content[].type`                   |
+| [Anthropic Messages](/es/adapters/anthropic)           | `@vinkius/connect/anthropic`       | `AnthropicTool[]` con `input_schema`                       | `runAnthropicToolUse` por nombre de visualización | `CapabilityResult`   | Ninguna                                                 |
+| [Vercel AI SDK](/es/adapters/ai-sdk)                   | `@vinkius/connect/ai-sdk`          | `Record<string, AISDKTool>` por nombre de visualización    | Callback `execute` vinculado                      | `CapabilityResult`   | Ninguna; las claves duplicadas sobrescriben herramientas anteriores |
+| [Google Gemini](/es/adapters/gemini)                   | `@vinkius/connect/gemini`          | `GeminiFunctionDeclaration[]`                              | `runGeminiFunctionCall` por nombre de visualización | `CapabilityResult` | Ninguna                                                 |
+| [LangChain.js](/es/adapters/langchain)                 | `@vinkius/connect/langchain`       | `T[]` de una fábrica `tool` inyectada                      | Callback de función vinculado                     | `string`             | Descarta `isError` y `content[].type`                   |
+| [LlamaIndex.TS](/es/adapters/llamaindex)               | `@vinkius/connect/llamaindex`      | `T[]` de una fábrica `tool` inyectada                      | Callback de función vinculado                     | `string`             | Descarta `isError` y `content[].type`                   |
+| [Cloudflare Workers AI](/es/adapters/workers-ai)       | `@vinkius/connect/workers-ai`      | `WorkersAITool[]` con una `function` vinculada             | Callback `function` vinculado                     | `string`             | Descarta `isError` y `content[].type`                   |
+| [JSON Schema / runtime personalizado](/es/adapters/json-schema) | `@vinkius/connect/json-schema` | `JSONSchemaTool[]`                                         | `executeByName` por nombre de visualización o en bruto | `CapabilityResult` | Ninguna; la coincidencia por nombre en bruto puede ser ambigua |
+
+Elige un adaptador de proveedor cuando tu aplicación reciba un objeto de llamada del proveedor y lo despache. Elige un adaptador de fábrica cuando un framework cree sus propios objetos de herramienta. Elige JSON Schema cuando controles el transporte y necesites definiciones sin un wrapper de framework.
+
+## Reglas de conversión
+
+Todos los convertidores aceptan `readonly Capability[]`, por lo que aceptan directamente un `CapabilitySet`. Los convertidores copian:
+
+- `capability.name` en el nombre de herramienta expuesto;
+- `capability.description` en la descripción de la herramienta;
+- `capability.inputSchema` en el campo de esquema específico del adaptador.
+
+Un esquema se conserva cuando es un objeto no vacío. Un esquema de runtime ausente, vacío, que no sea un objeto o que sea falsy se normaliza a:
+
+```json
+{ "type": "object", "properties": {} }
+```
+
+Los adaptadores no validan JSON Schema, argumentos ni reglas de nomenclatura específicas del proveedor.
+
+## Nombres y coincidencias
+
+El nombre de visualización predeterminado es `${connector}__${rawName}`. Por ejemplo, el nombre en bruto `create_issue` del conector `github` se convierte en `github__create_issue`.
+
+OpenAI, Anthropic y Gemini solo despachan por el nombre de visualización emitido durante la conversión. Su búsqueda en el array devuelve la primera capacidad coincidente cuando hay nombres de visualización duplicados. El AI SDK devuelve un `Record`; asignar un nombre de visualización duplicado sustituye la entrada anterior por la posterior.
+
+`executeByName` del adaptador JSON Schema acepta nombres de visualización o nombres en bruto. Devuelve el primer elemento del array que coincida con cualquiera de las dos formas. Por tanto, un nombre en bruto compartido por varios conectores es ambiguo; prefiere el nombre de visualización con namespace.
+
+## Ejecución y errores
+
+La ejecución de OpenAI, Anthropic, Gemini, JSON Schema y AI SDK conserva el resultado completo:
+
+```typescript
+interface CapabilityResult {
+  content: Array<{ type: string; text: string }>;
+  isError: boolean;
+}
+```
+
+`isError: true` es un resultado de capacidad, no una excepción. Sin embargo, los dispatchers explícitos lanzan un `Error` simple cuando el nombre es desconocido, y las excepciones de la ejecución de la capacidad siguen rechazando la promesa.
+
+OpenAI Agents, LangChain, LlamaIndex y Workers AI, en cambio, unen `content[].text` con `\n`. Su contrato de callback devuelve `string`, por lo que `isError` y el `type` de cada parte de contenido dejan de estar disponibles después de la conversión.
+
+Los dispatchers de los adaptadores y los callbacks vinculados llaman a `capability.execute(args)` sin `ExecuteOptions`. No pueden recibir una `idempotencyKey`. Llama directamente a la `Capability` seleccionada cuando necesites:
+
+```typescript
+const firstCapability = capabilities[0];
+
+if (firstCapability) {
+  const result = await firstCapability.execute(
+    {},
+    {
+      idempotencyKey: 'request_123',
+    },
+  );
+  console.log(result.content, result.isError);
+}
+```
+
+## Límites del paquete
+
+El paquete publica explícitamente estos subpaths de adaptadores:
+
+```text
+@vinkius/connect/openai
+@vinkius/connect/openai-agents
+@vinkius/connect/anthropic
+@vinkius/connect/ai-sdk
+@vinkius/connect/gemini
+@vinkius/connect/langchain
+@vinkius/connect/llamaindex
+@vinkius/connect/workers-ai
+@vinkius/connect/json-schema
+```
+
+`@vinkius/connect` declara cero dependencias de runtime y cero peer dependencies. Los adaptadores con forma de proveedor usan tipos estructurales locales; los adaptadores de fábrica reciben una función de tu aplicación. Esto describe la forma emitida, no la compatibilidad con todas las versiones de un framework externo. Comprueba la forma esperada por la versión instalada en tu aplicación.
+
+## Próximos pasos
+
+- Abre la página del adaptador que corresponda a tu runtime en la tabla anterior.
+- Consulta las referencias de [`CapabilitySet`](/es/reference/client#capabilityset) y [`Capability`](/es/reference/client#capability).
+- Separa los fallos devueltos de las excepciones lanzadas con [Manejo de errores](/es/guides/error-handling).

@@ -1,0 +1,117 @@
+---
+title: Autentique a aplicação e vincule o escopo do usuário
+description: Mantenha as credenciais da aplicação no servidor, derive externalId de uma identidade confiável e grave credenciais de conectores sem reler os valores.
+---
+
+O SDK autentica seu backend com um App ID e uma Application Key. Ele não autentica seus usuários finais. Sua aplicação precisa verificar o chamador, autorizar a operação solicitada e derivar o `externalId` usado em toda requisição com escopo por usuário.
+
+## Mantenha a chave da aplicação atrás de uma fronteira de servidor
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+
+export const vinkius = new Vinkius({
+  appId: process.env.VINKIUS_APP_ID!,
+  apiKey: process.env.VINKIUS_APP_KEY!,
+});
+```
+
+Conceitualmente, as requisições enviam a Application Key como autorização bearer e o App ID em um cabeçalho de aplicação. Não inicialize esse cliente no código do navegador nem retorne qualquer um desses valores a um cliente.
+
+O SDK não expõe uma API de OAuth hospedado nem de interface para configuração de conectores. Se um conector exigir credenciais, sua aplicação as coleta no próprio fluxo autenticado do servidor e as envia com `credentials.set()`.
+
+## Derive `externalId` do estado autenticado
+
+```typescript
+interface Session {
+  userId: string;
+}
+
+async function listActions(session: Session) {
+  return vinkius.user(session.userId).capabilities();
+}
+```
+
+Use seu próprio identificador estável e, de preferência, opaco para o usuário. O SDK rejeita valores que:
+
+- estejam vazios ou tenham mais de 255 caracteres;
+- contenham espaços em branco, `/` ou `\`;
+- comecem com `vk_app_user_`, que representa um identificador interno, não o seu ID.
+
+`user(externalId)` retorna um handle e não faz nenhuma requisição. `ensure(metadata)` é opcional:
+
+```typescript
+await vinkius.user(session.userId).ensure({ plan: 'team' });
+```
+
+A API trata essa chamada como um upsert idempotente. Mantenha os metadados livres de segredos; eles não são um armazenamento de credenciais.
+
+## Rejeite o escopo de usuário selecionado pelo cliente
+
+Este endpoint é vulnerável porque o corpo da requisição escolhe o usuário:
+
+```typescript
+// Não use este padrão sem uma verificação de autorização.
+const { externalId } = await request.json();
+const capabilities = await vinkius.user(externalId).capabilities();
+```
+
+Vincule o escopo antes de construir o handle:
+
+```typescript
+async function handleCapabilities(request: Request) {
+  const session = await requireSession(request); // código da aplicação
+  const capabilities = await vinkius.user(session.userId).capabilities();
+
+  return Response.json(
+    capabilities.map(({ name, description, inputSchema }) => ({
+      name,
+      description,
+      inputSchema,
+    })),
+  );
+}
+```
+
+A fronteira de autorização é a consulta da sua sessão. Um App ID e uma chave autorizam a aplicação, não um usuário específico do navegador.
+
+## Leia o schema de credenciais antes de coletar valores
+
+`credentials.schema()` lê os metadados do conector no catálogo. Ele não exige uma conexão de usuário existente:
+
+```typescript
+const github = vinkius.user(session.userId).connector('github');
+const schema = await github.credentials.schema();
+```
+
+Use o schema para decidir quais campos o formulário do seu servidor deve aceitar. Não pressuponha que todos os conectores usam tokens ou os mesmos nomes de chave.
+
+## Grave as credenciais somente depois de criar a conexão
+
+```typescript
+await github.connect();
+const state = await github.credentials.set({
+  GITHUB_TOKEN: submittedToken,
+});
+
+console.log(state.configured.GITHUB_TOKEN);
+```
+
+`credentials.status()` e `credentials.set()` exigem uma conexão; caso contrário, lançam `ConnectorNotConnectedError`. Suas respostas contêm o schema e um mapa das chaves configuradas, não os valores armazenados das credenciais:
+
+```typescript
+const state = await github.credentials.status();
+// state.configured: Record<string, boolean>
+```
+
+Trate os valores enviados como segredos no seu próprio código. A remoção de dados de observabilidade no transporte cobre uma lista fixa de nomes de campos conhecidos, mas não consegue identificar todo nome personalizado que você possa registrar em outro lugar.
+
+## Separe os ambientes da aplicação
+
+Use App IDs e chaves diferentes para desenvolvimento, staging e tráfego de produção. Isso separa usuários, estado das conexões e rotação de credenciais na fronteira de autenticação da aplicação.
+
+## Próximos passos
+
+- [Implemente uma rota multi-tenant](/pt/guides/multi-tenant)
+- [Crie a configuração do conector a partir do schema e do status](/pt/concepts/connectors)
+- [Trate erros de autenticação e validação](/pt/guides/error-handling)

@@ -1,0 +1,120 @@
+---
+title: Connect an account and run an action
+description: Configure one user-scoped connector, load its capabilities, and execute an action with @vinkius/connect.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+This quickstart connects a GitHub account for one application user, stores the connector credentials, discovers the actions available to that user, and executes one action. The same flow works for other connectors; their credential fields and capabilities come from the API.
+
+## Prerequisites
+
+- Node.js 18 or later, or a server runtime with `fetch`
+- `@vinkius/connect` installed
+- A Vinkius App ID and Application Key in server environment variables
+- A GitHub token for the example connector
+
+<Aside type="caution">
+  Run this code on your server. The Application Key and connector credentials must not be included in browser bundles or model prompts.
+</Aside>
+
+## Complete quickstart
+
+1. **Create a reusable client**
+
+   ```typescript
+   import { Vinkius } from '@vinkius/connect';
+
+   const vinkius = new Vinkius({
+     appId: process.env.VINKIUS_APP_ID!,
+     apiKey: process.env.VINKIUS_APP_KEY!,
+   });
+   ```
+
+   Construction validates the credential prefixes, base URL, and availability of `fetch`. It makes no HTTP request.
+
+2. **Create user and connector handles**
+
+   ```typescript
+   const user = vinkius.user('alice_123');
+   const github = user.connector('github');
+   ```
+
+   Both calls are lazy. They hold the trusted application user ID and connector slug, but send no request. `user.ensure({ plan: 'pro' })` is optional and only needed when you want the API to upsert the user explicitly or store non-secret metadata.
+
+3. **Create or retrieve the connection**
+
+   ```typescript
+   const connection = await github.connect();
+   console.log(connection.id);
+   ```
+
+   This sends one `POST` request. The Vinkius API treats it as get-or-create for this application user and connector. Calling `connect()` again still sends a request, but returns the same logical connection instead of creating a duplicate.
+
+4. **Store the connector credentials**
+
+   ```typescript
+   const credentialState = await github.credentials.set({
+     GITHUB_TOKEN: process.env.GITHUB_TOKEN!,
+   });
+
+   console.log(credentialState.configured);
+   ```
+
+   This sends one `PUT` request for the existing connection. The response reports which keys are configured; it does not return stored values. For a connector whose fields you do not know, call `await github.credentials.schema()` before connecting. Schema lookup reads the catalog and does not require a connection.
+
+5. **Load capabilities for this user**
+
+   ```typescript
+   const capabilities = await user.capabilities({ include: ['github'] });
+   const createIssue = capabilities.findCapability('github__create_issue');
+
+   if (!createIssue) {
+     throw new Error('GitHub create_issue is not available for this user');
+   }
+   ```
+
+   This sends one `GET` request. `include` is sent to the server, so the response is restricted to GitHub. An empty set is valid—for example, when the connector is not ready or exposes no matching actions.
+
+6. **Execute the action**
+
+   ```typescript
+   const operationId = 'issue-request-123';
+   const result = await createIssue.execute(
+     {
+       owner: 'acme',
+       repo: 'product',
+       title: 'Document the release process',
+     },
+     { idempotencyKey: `create-issue:${operationId}` },
+   );
+
+   const text = result.content.map((part) => part.text).join('\n');
+   if (result.isError) {
+     console.error('The connector reported a failed action:', text);
+   } else {
+     console.log('Issue created:', text);
+   }
+   ```
+
+   Execution sends one `POST` request. The non-empty, stable idempotency key allows the SDK to retry transient failures without representing the same logical action as a new operation. The SDK does not validate that the key is non-empty; generate and enforce it in your application.
+
+## Request summary
+
+| Code | Network behavior |
+| --- | --- |
+| `new Vinkius(...)` | No request |
+| `vinkius.user(...).connector(...)` | No request |
+| `github.connect()` | `POST` get-or-create connection |
+| `github.credentials.set(...)` | `PUT` credential values |
+| `user.capabilities(...)` | `GET` aggregated capabilities |
+| `createIssue.execute(...)` | `POST` capability execution |
+
+A resolved execution with `isError: true` is a connector-level result. Authentication, HTTP, timeout, and transport failures normally throw a `VinkiusError` subclass instead.
+
+## Next steps
+
+- [Install and configure the client](/getting-started/installation)
+- [Build a connector form from its schema](/concepts/connectors)
+- [Convert capabilities for a model runtime](/adapters/overview)
+- [Handle result and request failures](/guides/error-handling)

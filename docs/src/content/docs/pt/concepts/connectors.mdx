@@ -1,0 +1,122 @@
+---
+title: Configure e inspecione um conector de usuário
+description: Descubra campos de credenciais, crie uma conexão com escopo por usuário, grave credenciais, verifique a prontidão e desconecte a conta.
+---
+
+Um conector descreve uma integração no catálogo. Uma conexão é esse conector configurado para um usuário da aplicação. Esta página cria um fluxo de configuração no servidor sem pressupor os nomes dos campos de credenciais.
+
+O SDK não tem formulário de credenciais hospedado nem API de interface OAuth. Sua aplicação renderiza e autoriza a experiência de configuração e então chama os métodos do conector pelo backend.
+
+## Crie um handle de conector lazy
+
+```typescript
+const user = vinkius.user('alice_123');
+const github = user.connector('github');
+```
+
+Nenhuma das linhas envia uma requisição. O handle retém o escopo do usuário e o slug para operações posteriores. Os slugs dos conectores são repassados à API; ao contrário de `externalId`, o construtor não aplica um validador dedicado ao slug.
+
+## Leia os campos de credenciais obrigatórios
+
+```typescript
+const schema = await github.credentials.schema();
+
+for (const [key, field] of Object.entries(schema)) {
+  console.log(key, field.type, field.required ?? false);
+}
+```
+
+`schema()` lê os detalhes do catálogo e funciona antes que uma conexão exista. Um campo pode incluir `type`, `label`, `required`, `group`, `docs_url`, `placeholder` e valores `allowed`. Use esses descritores para construir ou validar seu próprio formulário.
+
+## Crie a conexão e armazene os valores
+
+```typescript
+async function configureConnector(
+  externalId: string,
+  slug: string,
+  values: Record<string, string>,
+) {
+  const connector = vinkius.user(externalId).connector(slug);
+
+  const connection = await connector.connect();
+  const credentialState = await connector.credentials.set(values);
+  const status = await connector.status();
+
+  return {
+    connectionId: connection.id,
+    configured: credentialState.configured,
+    status,
+  };
+}
+```
+
+`connect()` faz uma requisição. Pelo contrato da API do Vinkius, a operação é get-or-create para o usuário e o conector, por isso o SDK a marca como idempotente para repetições após falhas transitórias. Chamá-la repetidamente ainda executa E/S de rede.
+
+O handle memoriza o ID da conexão retornada. Chamadas posteriores a `credentials.set()`, `credentials.status()` ou `capabilities()` com escopo de conector nesse mesmo handle podem usá-lo sem outra consulta.
+
+## Interprete o status do conector
+
+```typescript
+const status = await github.status();
+```
+
+| Status | Condição derivada | Resposta típica da aplicação |
+| --- | --- | --- |
+| `not_connected` | Não existe conexão correspondente | Oferecer o fluxo de configuração do conector |
+| `needs_credentials` | A conexão está ativa, mas `ready` é falso | Coletar ou substituir os valores obrigatórios |
+| `ready` | A conexão está ativa e `ready` é verdadeiro | Carregar capacidades |
+| `disabled` | O status da conexão não é ativo | Informar ao usuário que a conexão não pode executar no momento |
+
+`status()` lista as conexões e retorna `not_connected` em vez de lançar quando nenhuma existe. `credentials.status()`, `credentials.set()`, `disconnect()` e `capabilities()` com escopo de conector exigem uma conexão e podem lançar `ConnectorNotConnectedError`.
+
+## Os valores das credenciais são somente para gravação
+
+```typescript
+const state = await github.credentials.status();
+
+console.log(state.schema);
+console.log(state.configured); // chave -> boolean
+```
+
+A API retorna o schema e os indicadores das chaves configuradas, não os valores armazenados. Não use o status como forma de recuperar ou copiar credenciais. Os valores enviados são verificados pelo serviço em relação ao schema do conector.
+
+## Liste todas as conexões existentes
+
+```typescript
+const summaries = await user.connectors();
+
+for (const summary of summaries) {
+  console.log(summary.slug, summary.status, summary.connectionId);
+}
+```
+
+Essa lista contém apenas conexões existentes e deriva os mesmos quatro valores de status de cada resposta de conexão.
+
+## Carregue ações ou desconecte
+
+```typescript
+const capabilities = await github.capabilities();
+// Use ou converta as capacidades aqui.
+
+await github.disconnect();
+```
+
+`disconnect()` resolve o ID da conexão, exclui a conexão e limpa a memória desse handle depois do sucesso. Outro handle tem uma memória separada. Se uma conexão for alterada fora de um handle, um ID memorizado anteriormente pode ficar desatualizado.
+
+## Descubra conectores no catálogo
+
+```typescript
+const page = await vinkius.catalog.list({ page: 1 });
+const detail = await vinkius.catalog.get('github');
+
+console.log(page.data);
+console.log(detail.credential_schema);
+```
+
+`catalog.search(query)` envia `q` ao mesmo endpoint do catálogo. A filtragem depende do suporte do serviço; um serviço que ignora `q` pode retornar a lista sem filtro.
+
+## Próximos passos
+
+- [Vincule a configuração do conector a usuários autenticados](/pt/guides/multi-tenant)
+- [Selecione e execute capacidades](/pt/concepts/capabilities)
+- [Resolva problemas de prontidão e credenciais](/pt/guides/troubleshooting)

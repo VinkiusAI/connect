@@ -1,0 +1,92 @@
+---
+title: De conectores con alcance de usuario a capacidades ejecutables
+description: Comprenda el flujo del Connect SDK, desde un usuario autenticado de la aplicación hasta acciones que el código o un modelo pueden ejecutar.
+---
+
+Vinkius Connect SDK proporciona a su backend una única API para configurar conectores de servicios externos por usuario de la aplicación y recuperar las acciones que esas conexiones exponen. Su código puede ejecutar una acción directamente o convertir los mismos objetos de capacidad al formato estructural de herramientas que usa un entorno de ejecución de modelos.
+
+El SDK no proporciona un flujo de OAuth alojado ni una interfaz de credenciales. Su aplicación controla la autenticación, la autorización, la recopilación de credenciales y la experiencia de usuario; el SDK se comunica con la API de Vinkius y ejecuta las capacidades devueltas.
+
+## Flujo completo
+
+1. Obtenga un `externalId` estable a partir de la sesión autenticada.
+2. Cree un identificador diferido del conector para ese usuario.
+3. Lea el esquema de credenciales del conector y recopile los valores necesarios en el flujo de su servidor.
+4. Cree la conexión y escriba sus credenciales.
+5. Cargue las capacidades del usuario, opcionalmente restringidas a determinados conectores.
+6. Ejecute una capacidad directamente o conviértala en el límite con su modelo.
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+
+const vinkius = new Vinkius({
+  appId: process.env.VINKIUS_APP_ID!,
+  apiKey: process.env.VINKIUS_APP_KEY!,
+});
+
+async function configureAndListActions(
+  externalId: string,
+  credentials: Record<string, string>,
+) {
+  const user = vinkius.user(externalId);
+  const connector = user.connector('github');
+
+  const schema = await connector.credentials.schema();
+  await connector.connect();
+  const credentialState = await connector.credentials.set(credentials);
+  const capabilities = await user.capabilities({ include: ['github'] });
+
+  return {
+    schema,
+    configured: credentialState.configured,
+    actions: capabilities.map(({ name, description }) => ({ name, description })),
+  };
+}
+```
+
+## Conector, conexión y capacidad
+
+| Término | Significado | Ejemplo |
+| --- | --- | --- |
+| Conector | Una integración disponible en el catálogo | `github` |
+| Conexión | Un conector configurado para un usuario de la aplicación | Conexión de GitHub de Alice |
+| Capacidad | Una acción ejecutable que expone una conexión | `github__create_issue` |
+
+`vinkius.user('alice_123')` y `.connector('github')` son identificadores. Crearlos no realiza ninguna solicitud. Las operaciones como `connect()`, `credentials.set()`, `capabilities()` y `execute()` atraviesan la red.
+
+## El alcance de usuario forma parte de la ruta
+
+Cada operación de usuario se dirige mediante las credenciales de su aplicación y el `externalId` que proporciona su backend. Dos usuarios pueden conectar el mismo conector y mantener separados el estado y las credenciales de sus conexiones.
+
+No acepte `externalId` como una entrada de cliente sin restricciones. Resuélvalo a partir de la sesión o compruebe que el llamador esté autorizado a actuar en su nombre antes de crear el identificador.
+
+## Las capacidades son el límite de ejecución
+
+Una `Capability` contiene:
+
+- un nombre visible con espacio de nombres para buscarla desde un modelo;
+- un nombre de acción sin procesar del conector que se usa para la ejecución;
+- una descripción y un contrato de entrada JSON Schema;
+- el conector y el ID de conexión necesarios para dirigir la solicitud;
+- `execute(args, { signal, idempotencyKey })`.
+
+```typescript
+const capabilities = await vinkius.user('alice_123').capabilities();
+
+for (const capability of capabilities) {
+  console.log(capability.name, capability.inputSchema);
+}
+```
+
+Un `CapabilitySet` vacío es un resultado normal. Trate la disponibilidad de capacidades como datos en tiempo de ejecución, en lugar de suponer que todos los usuarios disponen de las mismas herramientas.
+
+## Los adaptadores permanecen en el límite con el modelo
+
+Las capacidades principales no dependen de un proveedor de modelos. Las rutas secundarias de los adaptadores asignan sus nombres, descripciones y esquemas a estructuras de proveedores o frameworks. El paquete del adaptador no tiene dependencias en tiempo de ejecución de esos frameworks externos, por lo que su aplicación sigue siendo responsable de elegir y probar una versión compatible del framework.
+
+## Próximos pasos
+
+- [Instale el SDK](/es/getting-started/installation)
+- [Conecte una cuenta y ejecute una acción](/es/)
+- [Comprenda el estado de los conectores](/es/concepts/connectors)
+- [Elija un adaptador](/es/adapters/overview)

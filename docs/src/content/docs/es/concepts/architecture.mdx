@@ -1,0 +1,112 @@
+---
+title: Siga una capacidad desde el identificador hasta la solicitud HTTP
+description: Vea cómo la API fluida delega en clientes de recursos, dirige solicitudes HTTP, memoriza los ID de conexión y devuelve resultados de ejecución.
+---
+
+El SDK tiene tres capas: identificadores fluidos de usuario y conector, clientes de recursos de bajo nivel y un único transporte HTTP. Seguir esas capas permite entender cuándo una línea de código realiza E/S, qué se almacena en caché y qué fallos pueden reintentarse.
+
+## Los identificadores fluidos describen el alcance
+
+```typescript
+const user = vinkius.user('alice_123');
+const github = user.connector('github');
+```
+
+Estas líneas crean objetos `UserContext` y `Connector` sin contactar con la API. Los identificadores conservan el contexto de la aplicación, el `externalId` y el identificador del conector para que las llamadas posteriores puedan construir una ruta con alcance de usuario.
+
+El constructor tampoco realiza solicitudes. La E/S de red comienza con métodos como `ensure()`, `connect()`, `status()`, `schema()`, `capabilities()` y `execute()`.
+
+## Los métodos fluidos delegan en recursos
+
+| Operación fluida | Cliente de recursos | Operación HTTP |
+| --- | --- | --- |
+| `user.ensure(metadata)` | `AppUsersClient.create` | `POST /apps/{appId}/users` |
+| `user.connectors()` | `ConnectionsClient.list` | `GET /apps/{appId}/users/{externalId}/mcps` |
+| `connector.connect()` | `ConnectionsClient.create` | `POST .../mcps` |
+| `credentials.schema()` | `CatalogClient.get` | `GET /catalog/mcps/{slug}` |
+| `credentials.status()` | `CredentialsClient.status` | `GET .../mcps/{connectionId}/credentials` |
+| `credentials.set(values)` | `CredentialsClient.set` | `PUT .../mcps/{connectionId}/credentials` |
+| `user.capabilities()` | `AppUsersClient.capabilities` | `GET .../users/{externalId}/tools` |
+| `connector.capabilities()` | `ExecutionClient.list` | `GET .../mcps/{connectionId}/tools` |
+| `capability.execute()` | `ExecutionClient.execute` | `POST .../tools/execute` |
+
+Los componentes de la ruta se codifican antes de enviar las solicitudes. Los clientes de bajo nivel se exportan para aplicaciones que necesitan estructuras de recursos sin procesar; la API fluida añade resolución diferida, obtención del estado, construcción de capacidades y el mapa plano de credenciales.
+
+## La construcción de capacidades conserva el direccionamiento de ejecución
+
+El endpoint agregado devuelve datos de capacidades junto con identificadores del conector y de la conexión. El SDK convierte cada elemento en una `Capability` y aplica la función configurada para el nombre visible:
+
+```typescript
+const capability = capabilities.findCapability('github__create_issue');
+
+console.log(capability?.rawName);      // create_issue
+console.log(capability?.connector);    // github
+console.log(capability?.connectionId); // route for this user's connection
+```
+
+`execute()` envía `rawName`, los argumentos y el ID de conexión conservado. Como una capacidad está vinculada al alcance de usuario que la produjo, no almacene en caché los objetos de capacidad de un usuario para usarlos en la solicitud de otro.
+
+## La memorización del ID de conexión es local al identificador
+
+Un `Connector` resuelve su ID de conexión cuando una operación lo necesita y almacena el resultado en esa instancia. Reutilizar el mismo identificador puede evitar otra solicitud para enumerar conexiones:
+
+```typescript
+const github = vinkius.user('alice_123').connector('github');
+
+await github.connect();              // response ID is memoized
+await github.credentials.status();   // uses the memoized ID
+await github.capabilities();         // uses the memoized ID
+```
+
+Un identificador recién creado tiene su propia memoria, y no existe una caché de conexiones para toda la aplicación. Si una conexión se elimina desde fuera del identificador, un ID memorizado puede quedar obsoleto. `disconnect()` borra la memoria después de una eliminación correcta.
+
+`ResolverCache` es una utilidad independiente. `Vinkius` no la usa automáticamente para usuarios, esquemas, entradas del catálogo ni ID de conexión.
+
+## El transporte añade la autenticación de la aplicación
+
+Cada solicitud HTTP lleva la Application Key como autorización de portador y el App ID en el encabezado de aplicación del SDK. Estas son credenciales de la aplicación; el alcance de usuario proviene del `externalId` codificado en la ruta del recurso.
+
+El transporte también aplica:
+
+- un tiempo de espera por intento, de 30 segundos de forma predeterminada;
+- un `AbortSignal` opcional del llamador combinado con ese tiempo de espera;
+- serialización y análisis de JSON;
+- extracción del ID de solicitud a partir de los encabezados de respuesta admitidos;
+- asignación de respuestas a errores;
+- una política de reintentos para operaciones repetibles.
+
+## Los reintentos dependen del método y de la idempotencia
+
+El máximo predeterminado es el intento inicial más dos reintentos. Los errores de red, los tiempos de espera y los estados HTTP `429`, `502`, `503` o `504` se consideran transitorios, pero solo se reintentan las solicitudes repetibles.
+
+`GET`, `PUT` y `DELETE` son repetibles de forma predeterminada. La creación de usuarios y conexiones se marca explícitamente como idempotente porque sus contratos del servidor son de creación o actualización y de obtención o creación. La ejecución de capacidades solo es repetible cuando se proporciona `idempotencyKey`.
+
+El transporte comprueba si la clave de ejecución es `undefined`, mientras que el encabezado solo se envía para una cadena evaluada como verdadera. Por lo tanto, una cadena vacía puede habilitar el reintento sin enviar el encabezado. Valide siempre que la clave no esté vacía y sea estable antes de llamar a `execute()`.
+
+Los auxiliares de despacho de adaptadores llaman a `capability.execute(args)` sin `ExecuteOptions`; esas ejecuciones no incluyen una clave ni la señal del llamador y reciben un único intento de transporte.
+
+## Los hooks reciben una vista acotada y censurada
+
+`onRequest` recibe el método, la URL y los encabezados de cada intento. No recibe el cuerpo de la solicitud. Se censuran los nombres exactos de encabezados sensibles: autorización, clave de idempotencia y encabezados de cookies.
+
+`onResponse` recibe el estado, la URL, un ID de solicitud opcional y una copia del cuerpo de la respuesta. La censura usa una lista fija de nombres de campos exactos que no distingue mayúsculas de minúsculas, como `token`, `api_key`, `credentials`, `password` y `client_secret`, hasta una profundidad máxima de seis. No infiere todos los nombres personalizados que podrían contener secretos y no censura las URL.
+
+Las funciones de retorno de los hooks son síncronas y no se esperan. Si un hook lanza un error, se propaga el error original en lugar de convertirlo en `VinkiusError`.
+
+## Los fallos del resultado y de la solicitud son diferentes
+
+```typescript
+const result = await capability.execute(args, { idempotencyKey });
+
+if (result.isError) {
+  // The request completed; the capability reported failure.
+}
+```
+
+Los fallos HTTP, de configuración y la mayoría de los de transporte lanzan una subclase de `VinkiusError`. Cuando el servidor proporciona un identificador de solicitud, el error incluye `requestId`. Los nombres desconocidos en los despachadores de adaptadores lanzan un `Error` simple, no un `VinkiusError`.
+
+## Próximos pasos
+
+- [Examine la búsqueda y el filtrado de capacidades](/es/concepts/capabilities)
+- [Implemente ambas rutas de error](/es/guides/error-handling)
+- [Use la referencia de la API de bajo nivel](/es/reference/client#clientes-de-bajo-nivel)

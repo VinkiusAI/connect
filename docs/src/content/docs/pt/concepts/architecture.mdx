@@ -1,0 +1,112 @@
+---
+title: Acompanhe uma capacidade do handle à requisição HTTP
+description: Veja como a API fluente delega aos clientes de recursos, roteia requisições HTTP, memoriza IDs de conexão e retorna resultados de execução.
+---
+
+O SDK tem três camadas: handles fluentes de usuário e conector, clientes de recursos de baixo nível e um único transporte HTTP. Acompanhar essas camadas explica quando uma linha de código executa E/S, o que é armazenado em cache e quais falhas podem ser repetidas.
+
+## Handles fluentes descrevem o escopo
+
+```typescript
+const user = vinkius.user('alice_123');
+const github = user.connector('github');
+```
+
+Essas linhas criam objetos `UserContext` e `Connector` sem entrar em contato com a API. Os handles retêm o contexto da aplicação, o `externalId` e o slug do conector para que chamadas posteriores possam construir uma rota com escopo por usuário.
+
+O construtor também não faz requisições. A E/S de rede começa com métodos como `ensure()`, `connect()`, `status()`, `schema()`, `capabilities()` e `execute()`.
+
+## Métodos fluentes delegam aos recursos
+
+| Operação fluente | Cliente de recurso | Operação HTTP |
+| --- | --- | --- |
+| `user.ensure(metadata)` | `AppUsersClient.create` | `POST /apps/{appId}/users` |
+| `user.connectors()` | `ConnectionsClient.list` | `GET /apps/{appId}/users/{externalId}/mcps` |
+| `connector.connect()` | `ConnectionsClient.create` | `POST .../mcps` |
+| `credentials.schema()` | `CatalogClient.get` | `GET /catalog/mcps/{slug}` |
+| `credentials.status()` | `CredentialsClient.status` | `GET .../mcps/{connectionId}/credentials` |
+| `credentials.set(values)` | `CredentialsClient.set` | `PUT .../mcps/{connectionId}/credentials` |
+| `user.capabilities()` | `AppUsersClient.capabilities` | `GET .../users/{externalId}/tools` |
+| `connector.capabilities()` | `ExecutionClient.list` | `GET .../mcps/{connectionId}/tools` |
+| `capability.execute()` | `ExecutionClient.execute` | `POST .../tools/execute` |
+
+Os componentes do caminho são codificados antes do envio das requisições. Os clientes de baixo nível são exportados para aplicações que precisam de formatos brutos de recursos; a API fluente acrescenta resolução lazy, derivação de status, construção de capacidades e o mapa plano de credenciais.
+
+## A construção da capacidade preserva o roteamento de execução
+
+O endpoint agregado retorna dados de capacidades junto com identificadores do conector e da conexão. O SDK converte cada item em uma `Capability` e aplica a função configurada para o nome de exibição:
+
+```typescript
+const capability = capabilities.findCapability('github__create_issue');
+
+console.log(capability?.rawName);      // create_issue
+console.log(capability?.connector);    // github
+console.log(capability?.connectionId); // rota para a conexão deste usuário
+```
+
+`execute()` envia `rawName`, os argumentos e o ID de conexão retido. Como uma capacidade está vinculada ao escopo do usuário que a produziu, não armazene em cache objetos de capacidade de um usuário para a requisição de outro.
+
+## A memorização do ID da conexão é local ao handle
+
+Um `Connector` resolve o ID da conexão quando uma operação precisa dele e armazena o resultado nessa instância. Reutilizar o mesmo handle pode evitar outra requisição de listagem de conexões:
+
+```typescript
+const github = vinkius.user('alice_123').connector('github');
+
+await github.connect();              // o ID da resposta é memorizado
+await github.credentials.status();   // usa o ID memorizado
+await github.capabilities();         // usa o ID memorizado
+```
+
+Um handle recém-criado tem sua própria memória, e não existe cache de conexões para toda a aplicação. Se uma conexão for removida fora do handle, um ID memorizado pode ficar desatualizado. `disconnect()` limpa a memória após uma exclusão bem-sucedida.
+
+`ResolverCache` é um utilitário separado. `Vinkius` não o usa automaticamente para usuários, schemas, entradas do catálogo ou IDs de conexão.
+
+## O transporte adiciona a autenticação da aplicação
+
+Toda requisição HTTP leva a Application Key como autorização bearer e o App ID no cabeçalho de aplicação do SDK. Essas são credenciais no nível da aplicação; o escopo do usuário vem do `externalId` codificado no caminho do recurso.
+
+O transporte também aplica:
+
+- um timeout por tentativa, com padrão de 30 segundos;
+- um `AbortSignal` opcional do chamador combinado com esse timeout;
+- serialização e interpretação de JSON;
+- extração do ID da requisição a partir dos cabeçalhos de resposta compatíveis;
+- mapeamento de respostas para erros;
+- política de repetição para operações repetíveis.
+
+## A repetição depende do método e da idempotência
+
+O máximo padrão é a tentativa inicial mais duas repetições. Erros de rede, timeouts e HTTP `429`, `502`, `503` ou `504` são considerados transitórios, mas apenas requisições repetíveis são repetidas.
+
+`GET`, `PUT` e `DELETE` são repetíveis por padrão. A criação de usuário e a criação de conexão são marcadas explicitamente como idempotentes porque seus contratos com o servidor são upsert/get-or-create. A execução de uma capacidade só é repetível quando `idempotencyKey` é fornecida.
+
+O transporte verifica se a chave de execução é `undefined`, enquanto o cabeçalho só é enviado para uma string truthy. Portanto, uma string vazia pode habilitar a repetição sem enviar o cabeçalho. Sempre valide se a chave é estável e não vazia antes de chamar `execute()`.
+
+Os helpers de despacho dos adapters chamam `capability.execute(args)` sem `ExecuteOptions`; essas execuções não levam uma chave nem um sinal do chamador e recebem uma tentativa de transporte.
+
+## Hooks recebem uma visão limitada e com dados removidos
+
+`onRequest` recebe método, URL e cabeçalhos para cada tentativa. Ele não recebe o corpo da requisição. Nomes exatos de cabeçalhos sensíveis — autorização, chave de idempotência e cabeçalhos de cookie — têm seus valores removidos.
+
+`onResponse` recebe status, URL, ID de requisição opcional e uma cópia do corpo da resposta. A remoção de dados usa uma lista fixa de nomes de campos exatos, sem diferenciar maiúsculas e minúsculas, como `token`, `api_key`, `credentials`, `password` e `client_secret`, até a profundidade máxima de seis. Ela não infere todo nome personalizado que pareça conter um segredo, e URLs não têm dados removidos.
+
+Os callbacks de hooks são síncronos e não recebem `await`. Se um hook lançar, seu erro original é propagado em vez de ser convertido em `VinkiusError`.
+
+## Falhas de resultado e falhas de requisição são diferentes
+
+```typescript
+const result = await capability.execute(args, { idempotencyKey });
+
+if (result.isError) {
+  // A requisição foi concluída; a capacidade informou uma falha.
+}
+```
+
+Falhas de HTTP, configuração e a maioria das falhas de transporte lançam uma subclasse de `VinkiusError`. Quando o servidor fornece um identificador de requisição, o erro inclui `requestId`. Nomes desconhecidos nos dispatchers dos adapters lançam `Error` simples, não `VinkiusError`.
+
+## Próximos passos
+
+- [Examine a consulta e a filtragem de capacidades](/pt/concepts/capabilities)
+- [Implemente os dois caminhos de erro](/pt/guides/error-handling)
+- [Use a referência da API de baixo nível](/pt/reference/client#clientes-de-baixo-nível)

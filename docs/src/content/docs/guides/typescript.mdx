@@ -1,0 +1,226 @@
+---
+title: Model SDK boundaries with TypeScript
+description: Type client configuration, narrow unknown failures, represent capability results, and adapt runtime JSON Schemas without unsafe assumptions.
+---
+
+The package includes declarations for the root API and every adapter subpath. Static types describe client and resource shapes, while connector credential fields and capability argument schemas remain runtime data.
+
+## Type client configuration before construction
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+import type { VinkiusOptions } from '@vinkius/connect';
+
+const options = {
+  appId: process.env.VINKIUS_APP_ID!,
+  apiKey: process.env.VINKIUS_APP_KEY!,
+  timeoutMs: 20_000,
+  maxRetries: 2,
+  hooks: {
+    onResponse: ({ status, requestId }) => {
+      console.debug({ status, requestId });
+    },
+  },
+} satisfies VinkiusOptions;
+
+export const vinkius = new Vinkius(options);
+```
+
+`satisfies` checks property names and callback arguments without widening the object to `VinkiusOptions` before it reaches the constructor.
+
+## Import public contracts from the root
+
+```typescript
+import {
+  Capability,
+  CapabilitySet,
+  ValidationError,
+  Vinkius,
+  VinkiusError,
+} from '@vinkius/connect';
+
+import type {
+  CapabilityQuery,
+  CapabilityResult,
+  ConnectorStatus,
+  CredentialSchema,
+  CredentialStatus,
+  ExecuteOptions,
+  JSONSchema,
+  RequestOptions,
+} from '@vinkius/connect';
+```
+
+Classes and errors are runtime values, so import them normally when using `new` or `instanceof`. Interfaces and aliases should use `import type` when your TypeScript configuration preserves imports.
+
+## Keep runtime capability lookup explicit
+
+```typescript
+import type { Capability, CapabilityResult } from '@vinkius/connect';
+
+async function executeIssue(
+  externalId: string,
+  operationId: string,
+): Promise<CapabilityResult> {
+  const query = {
+    include: ['github'],
+  } satisfies CapabilityQuery;
+
+  const capabilities = await vinkius.user(externalId).capabilities(query);
+  const capability: Capability | undefined =
+    capabilities.findCapability('github__create_issue');
+
+  if (!capability) {
+    throw new Error('GitHub create_issue is not available for this user');
+  }
+
+  return capability.execute(
+    { owner: 'acme', repo: 'product', title: 'Document the SDK' },
+    { idempotencyKey: `create-issue:${operationId}` },
+  );
+}
+```
+
+Capability availability depends on the user and service response, so lookup returns `Capability | undefined`. Do not hide that branch with a non-null assertion.
+
+## Represent the two execution outcomes
+
+```typescript
+interface CompletedAction {
+  kind: 'completed';
+  text: string;
+}
+
+interface FailedAction {
+  kind: 'capability-error';
+  text: string;
+}
+
+type ActionOutcome = CompletedAction | FailedAction;
+
+function mapResult(result: CapabilityResult): ActionOutcome {
+  const text = result.content.map((part) => part.text).join('\n');
+  return result.isError
+    ? { kind: 'capability-error', text }
+    : { kind: 'completed', text };
+}
+```
+
+`isError` is a boolean rather than a discriminant literal in the SDK type, so map it to your own union when downstream code benefits from exhaustive switching.
+
+## Narrow thrown values from `unknown`
+
+```typescript
+import {
+  RateLimitError,
+  ValidationError,
+  VinkiusError,
+} from '@vinkius/connect';
+
+type RequestFailure =
+  | { kind: 'validation'; fields: unknown }
+  | { kind: 'rate-limit'; retryAfterMs?: number }
+  | { kind: 'sdk'; code: string; status: number; requestId?: string };
+
+function classifyFailure(error: unknown): RequestFailure | undefined {
+  if (error instanceof ValidationError) {
+    return { kind: 'validation', fields: error.errors };
+  }
+
+  if (error instanceof RateLimitError) {
+    return {
+      kind: 'rate-limit',
+      ...(error.retryAfterMs !== undefined
+        ? { retryAfterMs: error.retryAfterMs }
+        : {}),
+    };
+  }
+
+  if (error instanceof VinkiusError) {
+    return {
+      kind: 'sdk',
+      code: error.code,
+      status: error.status,
+      ...(error.requestId ? { requestId: error.requestId } : {}),
+    };
+  }
+
+  return undefined;
+}
+```
+
+Keep an unknown branch. Adapter dispatchers, application hooks, and some abort timing paths can throw values outside the `VinkiusError` hierarchy.
+
+## Treat credential and capability schemas as runtime contracts
+
+```typescript
+function requiredCredentialKeys(schema: CredentialSchema): string[] {
+  return Object.entries(schema)
+    .filter(([, field]) => field.required === true)
+    .map(([key]) => key);
+}
+
+function capabilitySchema(capability: Capability): JSONSchema {
+  return capability.inputSchema;
+}
+```
+
+`CredentialSchema` has typed field descriptors. `JSONSchema` is intentionally `Record<string, unknown>` because connector schemas vary. Validate it with the JSON Schema library chosen by your application before treating tool arguments as a domain-specific type.
+
+Avoid casting arbitrary model output directly:
+
+```typescript
+// Avoid: the cast performs no runtime validation.
+const issue = modelArgs as { owner: string; repo: string; title: string };
+```
+
+Instead, validate `modelArgs` against `capability.inputSchema`, then map the validated value into your application type.
+
+## Type request controls separately
+
+```typescript
+const requestOptions: RequestOptions = {
+  signal: request.signal,
+};
+
+const executeOptions: ExecuteOptions = {
+  signal: request.signal,
+  idempotencyKey: `operation:${operationId}`,
+};
+```
+
+Every request method accepts `signal`. Only capability execution adds `idempotencyKey`. Adapter dispatch helpers do not accept `ExecuteOptions`, even though their returned or bound execution functions are typed.
+
+## Preserve factory return types in adapters
+
+Factory adapters are generic and return whatever your injected factory creates:
+
+```typescript
+import { toLangChainTools } from '@vinkius/connect/langchain';
+import type { JSONSchema } from '@vinkius/connect';
+
+interface AppTool {
+  name: string;
+  run(input: Record<string, unknown>): Promise<string>;
+}
+
+const toolFactory = (
+  fn: (input: Record<string, unknown>) => Promise<string>,
+  config: { name: string; description: string; schema: JSONSchema },
+): AppTool => ({
+  name: config.name,
+  run: fn,
+});
+
+const tools: AppTool[] = toLangChainTools(capabilities, {
+  tool: toolFactory,
+});
+```
+
+This example uses only the adapter's structural contract. Test an actual framework factory against the version installed by your application.
+
+## Next steps
+
+- [Browse root exports and resource types](/reference/client)
+- [Inspect capability runtime behavior](/concepts/capabilities)
+- [Compare adapter return types](/adapters/overview)

@@ -1,0 +1,190 @@
+---
+title: Résoudre les problèmes par symptôme
+description: Identifiez les échecs de configuration, d’authentification, de connexion, de capacité, de dispatch, de validation, de timeout et de quota à partir de leur comportement observable.
+---
+
+Commencez par la valeur reçue : une erreur levée, un ensemble de capacités vide, un état de connecteur ou un `CapabilityResult` résolu. Ces signaux correspondent à différentes couches et exigent des corrections différentes.
+
+## Le constructeur lève une exception avant toute requête
+
+### Erreur de préfixe pour `appId` ou `apiKey`
+
+Utilisez l’ID public et la clé secrète dans les champs appropriés :
+
+```typescript
+const vinkius = new Vinkius({
+  appId: 'vk_app_...',
+  apiKey: 'vk_app_sk_...',
+});
+```
+
+L’ID public de l’application doit commencer par `vk_app_`, mais pas par `vk_app_sk_`. La clé doit commencer par `vk_app_sk_`.
+
+### `No global fetch found`
+
+Utilisez Node.js 18 ou version ultérieure, un runtime avec `fetch` global, ou transmettez une implémentation compatible au moyen de l’option `fetch` du constructeur.
+
+### `Invalid externalId`
+
+Utilisez l’ID utilisateur de votre application, et non un identifiant `vk_app_user_...`. Il doit comporter de 1 à 255 caractères et ne peut contenir ni espace, ni `/`, ni `\`.
+
+## Les requêtes lèvent `AuthError`
+
+Une réponse HTTP `401` ou `403` est convertie en `AuthError`.
+
+1. Vérifiez que les variables d’environnement ont été chargées dans le processus serveur.
+2. Vérifiez que l’Application Key appartient à l’App ID et à l’environnement configurés.
+3. Remplacez une clé révoquée ou ayant fait l’objet d’une rotation.
+4. Vérifiez que le code de déploiement n’a pas interverti l’App ID et la clé.
+5. Enregistrez `requestId` lorsqu’il est présent, mais ne journalisez jamais la clé.
+
+## L’état du connecteur est `not_connected`
+
+Un handle ne crée pas de connexion :
+
+```typescript
+const connector = vinkius.user(externalId).connector('github');
+console.log(await connector.status()); // peut être 'not_connected'
+
+await connector.connect();
+```
+
+`connect()` effectue la requête de récupération ou création. `credentials.status()`, `credentials.set()`, `disconnect()` et les `capabilities()` limitées au connecteur lèvent `ConnectorNotConnectedError` tant qu’aucune connexion n’existe.
+
+## L’état du connecteur est `needs_credentials`
+
+Lisez le schéma du catalogue, recueillez les valeurs requises dans votre flux serveur, puis enregistrez-les :
+
+```typescript
+const schema = await connector.credentials.schema();
+const state = await connector.credentials.set(values);
+
+console.log(schema, state.configured);
+```
+
+`schema()` peut s’exécuter avant la connexion, contrairement à `set()`. Comparez le nom des clés soumises au schéma et inspectez `ValidationError.errors` si le service les refuse. Les valeurs stockées ne sont pas renvoyées.
+
+## L’état du connecteur est `disabled`
+
+La connexion existe, mais son état dans l’API n’est pas actif. Réécrire les identifiants peut ne pas modifier cette situation. Indiquez à l’utilisateur que la connexion ne peut pas s’exécuter, inspectez si nécessaire la réponse de connexion au moyen du client de bas niveau, ou remplacez la connexion conformément au flux de votre application.
+
+## `user.capabilities()` renvoie un ensemble vide
+
+Un ensemble vide est valide. Inspectez le contexte et les filtres :
+
+```typescript
+const user = vinkius.user(externalId);
+const connectors = await user.connectors();
+const capabilities = await user.capabilities({ include: ['github'] });
+
+console.log({ connectors, count: capabilities.length });
+```
+
+Vérifiez les points suivants dans l’ordre :
+
+1. `externalId` provient bien de la session authentifiée voulue.
+2. Le slug attendu apparaît dans `connectors()`.
+3. Son état dérivé est `ready`.
+4. `include` utilise le slug exact attendu par le service.
+5. `exclude` n’a pas retiré le connecteur localement.
+6. L’endpoint agrégé a réellement renvoyé des actions pour la connexion.
+
+Le client convertit la réponse de l’endpoint ; il n’ajoute aucun filtre local sur l’état de préparation.
+
+## La recherche de capacité renvoie `undefined`
+
+Inspectez les deux noms :
+
+```typescript
+for (const capability of capabilities) {
+  console.log(capability.name, capability.rawName, capability.connector);
+}
+```
+
+Par défaut, le nom d’affichage possède un espace de noms, par exemple `github__create_issue`. `findCapability()` accepte le nom d’affichage ou le nom brut et renvoie la première correspondance. Lorsque des noms bruts entrent en collision, appelez d’abord `forConnector(slug)` ou utilisez le nom d’affichage avec espace de noms.
+
+Si vous avez fourni `namespaceCapability`, vérifiez que sa sortie respecte les contraintes de nommage du fournisseur et reste unique ; les adaptateurs ne font respecter aucune de ces deux propriétés.
+
+## Une fonction de dispatch d’adaptateur lève `Unknown capability`
+
+Transmettez le même tableau de capacités à la conversion et au dispatch, et conservez exactement le nom d’affichage renvoyé :
+
+```typescript
+const tools = toOpenAITools(capabilities);
+// Envoyez les outils au modèle, puis :
+const result = await runOpenAIToolCall(capabilities, returnedCall);
+```
+
+Les fonctions de dispatch OpenAI, Anthropic et Gemini comparent uniquement les noms d’affichage. Le dispatch JSON Schema accepte les noms d’affichage ou bruts, avec une ambiguïté sur la première correspondance pour les noms bruts dupliqués. Les noms de dispatch inconnus lèvent une simple `Error`, et non une `VinkiusError`.
+
+## Les arguments OpenAI deviennent inopinément `{}`
+
+`runOpenAIToolCall` analyse `call.function.arguments`. Les chaînes vides, le JSON mal formé, la valeur JSON `null` et les primitives JSON sont tous convertis en `{}`. Validez ou journalisez la forme analysée dans votre propre boucle de modèle si les arguments mal formés doivent être refusés plutôt que tolérés.
+
+## L’exécution est résolue avec `isError: true`
+
+La requête HTTP s’est terminée et la capacité a signalé l’échec de l’action. Inspectez le contenu renvoyé :
+
+```typescript
+const result = await capability.execute(args, options);
+
+if (result.isError) {
+  console.error(result.content.map((part) => part.text).join('\n'));
+}
+```
+
+N’attendez pas cette branche dans `catch`. Une boucle de fournisseur peut renvoyer le résultat au modèle, tandis qu’une route déterministe peut le convertir en réponse d’erreur applicative.
+
+Les adaptateurs à fabrique qui renvoient des chaînes perdent `isError` ; exécutez donc directement la capacité d’origine lorsque cette distinction est importante.
+
+## L’exécution a expiré ou a levé `ConnectionError`
+
+Les lectures et les autres opérations répétables peuvent être réessayées automatiquement. L’exécution d’une capacité n’est réessayée que lorsque `idempotencyKey` n’est pas `undefined`.
+
+```typescript
+if (!operationId) throw new Error('operationId is required');
+
+await capability.execute(args, {
+  idempotencyKey: `create-issue:${operationId}`,
+});
+```
+
+Ne transmettez pas une clé vide : l’implémentation actuelle peut la classer comme répétable sans envoyer l’en-tête. Après un timeout sans clé valide, l’action externe peut avoir abouti ; réconciliez son état avant d’envoyer une nouvelle opération.
+
+Les fonctions de dispatch des adaptateurs ne peuvent transmettre ni clé d’idempotence ni signal. Utilisez l’exécution directe pour les effets de bord qui nécessitent ces contrôles.
+
+## Une erreur de débit ou de plan persiste
+
+- `RateLimitError` peut fournir `retryAfterMs` une fois les nouvelles tentatives automatiques épuisées.
+- `QuotaError` et `OverageError` peuvent fournir `upgradeUrl` ; répéter la même opération ne modifie pas une limite de plan.
+- Le transport considère une réponse `429` comme transitoire avant d’analyser son corps ; les requêtes répétables peuvent donc consommer leurs nouvelles tentatives avant une erreur de quota finale.
+
+## Les hooks n’affichent pas une erreur réseau
+
+`onResponse` ne s’exécute qu’après une réponse HTTP. Un timeout ou une erreur réseau sans réponse ne l’invoque pas. `onRequest` s’exécute avant chaque tentative ; un journal de requête sans journal de réponse peut donc indiquer une erreur de transport.
+
+Les exceptions des hooks sont propagées sous leur forme d’origine. Veillez à ce que les hooks ne lèvent pas d’exception. Le SDK expurge une liste fixe de noms de champs exacts, et non toutes les clés personnalisées qui ressemblent à des secrets.
+
+## Recueillir les diagnostics pour le support
+
+```typescript
+import { VinkiusError } from '@vinkius/connect';
+
+if (error instanceof VinkiusError) {
+  console.error({
+    code: error.code,
+    status: error.status,
+    requestId: error.requestId,
+    connector: connector.slug,
+    occurredAt: new Date().toISOString(),
+  });
+}
+```
+
+Une erreur locale ou de transport peut ne pas avoir de `requestId`. N’incluez ni clés d’application, ni valeurs d’identifiants, ni en-têtes d’autorisation, ni `error.details` non examinés.
+
+## Étapes suivantes
+
+- [Mettre en œuvre le modèle d’échec complet](/fr/guides/error-handling)
+- [Examiner les transitions d’état des connecteurs](/fr/concepts/connectors)
+- [Vérifier l’analyse et le comportement des résultats propres à chaque adaptateur](/fr/adapters/overview)

@@ -1,0 +1,112 @@
+---
+title: Adaptateur Vercel AI SDK
+description: Convertissez les capacités en un registre d’outils indexé avec une exécution liée.
+---
+
+Utilisez cet adaptateur lorsque le runtime de votre modèle accepte un registre d’outils indexé par nom. Chaque valeur contient une description, des paramètres de schéma et un callback `execute` déjà lié à une capacité.
+
+## Convertir et exécuter
+
+Cet exemple utilise l’adaptateur sans appeler d’API externe d’un SDK d’IA.
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+import { toAISDKTools } from '@vinkius/connect/ai-sdk';
+
+const vinkius = new Vinkius({
+  appId: 'vk_app_replace_me',
+  apiKey: 'vk_app_sk_replace_me',
+});
+const capabilities = await vinkius.user('user_123').capabilities();
+const tools = toAISDKTools(capabilities);
+
+const firstName = Object.keys(tools)[0];
+const firstTool = firstName ? tools[firstName] : undefined;
+
+if (firstTool) {
+  const result = await firstTool.execute({});
+  console.log(result.content, result.isError);
+}
+```
+
+Transmettez `tools` à une opération de votre runtime installé qui accepte cette forme de registre. Aucune fonction utilitaire de dispatch distincte n’est nécessaire.
+
+## Format du registre
+
+`toAISDKTools` renvoie `Record<string, AISDKTool>`. Pour chaque capacité, il affecte :
+
+```typescript
+tools[capability.name] = {
+  description: capability.description,
+  parameters: capability.inputSchema,
+  execute: (args) => capability.execute(args),
+};
+```
+
+Le `Record` renvoyé est la collection d’outils, et non le résultat de l’exécution. L’appel à `execute` renvoie `CapabilityResult`.
+
+`parameters` est d’abord normalisé : un objet non vide est conservé, tandis qu’une valeur vide, absente, falsy ou qui n’est pas un objet à l’exécution devient `{ type: 'object', properties: {} }`.
+
+## Fonction utilitaire de schéma facultative
+
+L’adaptateur accepte une fonction structurelle facultative :
+
+```typescript
+const applicationSchemaWrapper = (schema: Record<string, unknown>): unknown => ({ schema });
+
+const tools = toAISDKTools(capabilities, {
+  jsonSchema: applicationSchemaWrapper,
+});
+```
+
+Le JSON Schema normalisé est transmis à `jsonSchema`, et la valeur renvoyée par la fonction devient `parameters`. Sans cette fonction, `parameters` est l’objet JSON Schema brut.
+
+`applicationSchemaWrapper` ci-dessus appartient au code local de l’application ; l’adaptateur ne la fournit pas. Lorsque vous utilisez une fonction provenant d’un package externe, vérifiez que sa signature et la forme d’outil attendue correspondent à la version installée. `@vinkius/connect` n’importe pas ce package.
+
+## Noms et clés dupliquées
+
+Les clés utilisent `capability.name`, le nom d’affichage qui vaut par défaut `${connector}__${rawName}`. Comme le résultat est un objet JavaScript, des noms dupliqués ne peuvent pas coexister : l’affectation d’une capacité ultérieure remplace l’outil précédent associé à la même clé.
+
+L’exécution est liée avant le renvoi ; il n’y a donc ni recherche de nom à l’exécution ni erreur de fonction de dispatch pour un nom inconnu.
+
+## Résultats et limites
+
+Chaque `execute(args)` conserve le `CapabilityResult` complet :
+
+```typescript
+{
+  content: Array<{ type: string; text: string }>;
+  isError: boolean;
+}
+```
+
+`isError: true` est renvoyé sans modification ; les exceptions d’exécution rejettent toujours la promesse.
+
+Le callback lié accepte uniquement `args`. Il ne peut ni recevoir `ExecuteOptions` ni transmettre une `idempotencyKey`. Exécutez directement la capacité d’origine lorsque ces contrôles sont nécessaires.
+
+## API publique
+
+Le sous-chemin `@vinkius/connect/ai-sdk` exporte :
+
+```typescript
+interface AISDKTool {
+  description: string;
+  parameters: unknown;
+  execute: (args: Record<string, unknown>) => Promise<CapabilityResult>;
+}
+
+interface ToAISDKOptions {
+  jsonSchema?: (schema: JSONSchema) => unknown;
+}
+
+function toAISDKTools(
+  capabilities: readonly Capability[],
+  options?: ToAISDKOptions,
+): Record<string, AISDKTool>;
+```
+
+## Voir aussi
+
+- Comparez [les sorties et types de retour de tous les adaptateurs](/fr/adapters/overview).
+- Consultez les références de [`CapabilitySet`](/fr/reference/client#capabilityset) et de [`Capability`](/fr/reference/client#capability).
+- Gérez les échecs renvoyés et les exceptions avec la [gestion des erreurs](/fr/guides/error-handling).

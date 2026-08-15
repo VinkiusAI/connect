@@ -1,0 +1,169 @@
+---
+title: Enforce user scope in a multi-tenant backend
+description: Derive externalId from authenticated state, authorize connector operations, and prevent one tenant from selecting another tenant's capabilities.
+---
+
+A Vinkius client is scoped to one application, while each fluent user handle is scoped by `externalId`. Your backend must supply the missing authorization boundary: determine which signed-in principal may act for which application user before constructing a handle.
+
+The main threat is confused user scope. If a request can submit an arbitrary `externalId`, application-level credentials can be used to address another user's connectors even though each API route is user-scoped.
+
+## Create one application-scoped client
+
+```typescript
+// lib/vinkius.ts — server-only
+import { Vinkius } from '@vinkius/connect';
+
+export const vinkius = new Vinkius({
+  appId: process.env.VINKIUS_APP_ID!,
+  apiKey: process.env.VINKIUS_APP_KEY!,
+});
+```
+
+The client holds no mutable current-user field. Reuse it across requests and create a new lazy `UserContext` for the authenticated ID in each operation.
+
+## Resolve scope before reading request input
+
+```typescript
+interface Session {
+  userId: string;
+  tenantId: string;
+}
+
+async function userScope(request: Request): Promise<string> {
+  const session: Session = await requireSession(request); // application code
+
+  // If your product has organizations, enforce membership here.
+  await requireTenantMembership(session.userId, session.tenantId);
+
+  // Use an opaque, stable ID from the authorization result.
+  return `${session.tenantId}_${session.userId}`;
+}
+```
+
+The composition scheme is application-specific. It must remain stable, fit the SDK's 255-character limit, and contain no whitespace, slash, or backslash.
+
+Do not trust this pattern:
+
+```typescript
+// Vulnerable unless a separate authorization check proves access to externalId.
+const { externalId } = await request.json();
+const user = vinkius.user(externalId);
+```
+
+## Return only the authenticated user's capabilities
+
+```typescript
+import { vinkius } from './lib/vinkius';
+
+export async function handleTools(request: Request): Promise<Response> {
+  const externalId = await userScope(request);
+  const capabilities = await vinkius.user(externalId).capabilities({
+    include: ['github'],
+    signal: request.signal,
+  });
+
+  return Response.json(
+    capabilities.map(({ name, description, inputSchema }) => ({
+      name,
+      description,
+      inputSchema,
+    })),
+  );
+}
+```
+
+Do not return `connectionId` unless your client actually needs it. It is routing data, not an authorization token, but minimizing exposed identifiers reduces accidental coupling.
+
+## Authorize connector setup separately
+
+Connector configuration writes credentials and should have its own permission check:
+
+```typescript
+interface ConnectorInput {
+  slug: string;
+  values: Record<string, string>;
+}
+
+export async function handleConnectorSetup(request: Request): Promise<Response> {
+  const externalId = await userScope(request);
+  await requirePermission(request, 'connectors:write'); // application code
+
+  const input = (await request.json()) as ConnectorInput;
+  const connector = vinkius.user(externalId).connector(input.slug);
+
+  const schema = await connector.credentials.schema({ signal: request.signal });
+  validateCredentialKeys(input.values, schema); // application code
+
+  await connector.connect({ signal: request.signal });
+  const credentialState = await connector.credentials.set(input.values, {
+    signal: request.signal,
+  });
+
+  return Response.json({ configured: credentialState.configured });
+}
+```
+
+The example keeps credential values inside the server request. Do not echo them in the response, attach them to user metadata, add them to model messages, or log the request body.
+
+There is no hosted connector UI or OAuth API in this SDK. If your product uses an OAuth exchange, complete it in an authorized server route and write the resulting connector fields according to the catalog schema.
+
+## Execute only capabilities loaded in the same scope
+
+```typescript
+export async function handleCreateIssue(
+  request: Request,
+  operationId: string,
+): Promise<Response> {
+  const externalId = await userScope(request);
+  await requirePermission(request, 'issues:create');
+
+  const capabilities = await vinkius.user(externalId).capabilities({
+    include: ['github'],
+    signal: request.signal,
+  });
+  const capability = capabilities.findCapability('github__create_issue');
+
+  if (!capability) {
+    return Response.json({ error: 'GitHub action unavailable' }, { status: 409 });
+  }
+
+  const input = await request.json();
+  const result = await capability.execute(input, {
+    signal: request.signal,
+    idempotencyKey: `create-issue:${externalId}:${operationId}`,
+  });
+
+  return Response.json(result, { status: result.isError ? 422 : 200 });
+}
+```
+
+Do not keep a global capability set and reuse it across users. Each capability stores a connection ID from the user whose aggregation response created it.
+
+## Use metadata only for non-secret application context
+
+```typescript
+await vinkius.user(externalId).ensure({
+  tenantTier: 'team',
+  region: 'eu',
+});
+```
+
+`ensure()` is optional and performs an API upsert. Metadata should not contain connector credentials, session tokens, or authorization decisions that your backend has not independently verified.
+
+## Test the isolation boundary
+
+Automate at least these cases with two distinct users or tenants:
+
+1. Alice and Bob can connect the same slug and receive different connection IDs.
+2. Alice cannot make a request that substitutes Bob's `externalId`.
+3. A user without a connector receives an empty set rather than another user's capabilities.
+4. A read-only role cannot call the connector setup route.
+5. Credential values do not appear in route responses, logs, hooks, or model input.
+6. A capability loaded for Alice is never retained and dispatched from Bob's request.
+7. Development and live environments use different App IDs and keys.
+
+## Next steps
+
+- [Understand application and connector credentials](/concepts/authentication)
+- [Restrict the capabilities sent to a model](/concepts/capabilities)
+- [Handle request and capability failures](/guides/error-handling)

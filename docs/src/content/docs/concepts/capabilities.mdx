@@ -1,0 +1,123 @@
+---
+title: Load, select, and execute capabilities
+description: Aggregate actions for one user, filter connector scope, resolve naming collisions, and execute with cancellation or idempotency.
+---
+
+A capability is an action returned for a particular user connection. It combines the model-facing description and JSON Schema with the connection route needed to execute the action.
+
+Use the aggregated user method when an assistant can work across connectors, or a connector handle when only one connected account should contribute actions.
+
+## Aggregate capabilities for one user
+
+```typescript
+const user = vinkius.user('alice_123');
+const capabilities = await user.capabilities();
+```
+
+This performs one request to the user capability endpoint and converts each returned item into an executable `Capability`. The endpoint determines which connections contribute actions; the client does not perform a second readiness check.
+
+An empty `CapabilitySet` is valid. It can mean the user has no available actions, no connection matches the requested filter, or the service returned none. Handle it explicitly:
+
+```typescript
+if (capabilities.length === 0) {
+  return { tools: [], message: 'Connect an account before requesting this action.' };
+}
+```
+
+## Restrict connector scope
+
+```typescript
+const selected = await user.capabilities({
+  include: ['github', 'slack'],
+  exclude: ['slack'],
+});
+```
+
+`include` is sent to the server as a connector filter. `exclude` is applied by the SDK after the response. In this example, the request asks for GitHub and Slack, then removes Slack locally.
+
+For one connector, use its handle:
+
+```typescript
+const githubCapabilities = await user.connector('github').capabilities();
+```
+
+Connector-scoped lookup requires an existing connection and may first list connections to resolve its ID. It throws `ConnectorNotConnectedError` when no match exists.
+
+## Inspect the capability contract
+
+```typescript
+for (const capability of capabilities) {
+  console.log({
+    name: capability.name,
+    rawName: capability.rawName,
+    connector: capability.connector,
+    connectionId: capability.connectionId,
+    title: capability.title,
+    description: capability.description,
+    inputSchema: capability.inputSchema,
+  });
+}
+```
+
+By default, `name` is `${connector}__${rawName}`, such as `github__create_issue`. `rawName` is the connector's action name and is what the SDK sends to execution. You can replace the display-name function with `namespaceCapability` in the client constructor, but adapters do not validate provider naming rules.
+
+## Select without assuming availability
+
+`CapabilitySet` extends `Array<Capability>` and adds two helpers:
+
+```typescript
+const githubOnly = capabilities.forConnector('github');
+const createIssue = githubOnly.findCapability('github__create_issue');
+```
+
+`forConnector()` compares connector slugs exactly. `findCapability()` accepts either a display name or raw name and returns the first match. Raw names can collide—for example, two connectors may both expose `search`. Prefer a unique display name or filter by connector first.
+
+## Execute with the returned schema
+
+```typescript
+if (!createIssue) {
+  throw new Error('The requested action is not available for this user');
+}
+
+const result = await createIssue.execute(
+  { owner: 'acme', repo: 'product', title: 'Document retries' },
+  {
+    idempotencyKey: 'create-issue:operation-8042',
+    signal: request.signal,
+  },
+);
+
+const output = result.content.map((part) => part.text).join('\n');
+if (result.isError) {
+  console.error(output);
+}
+```
+
+Arguments are `Record<string, unknown>` because schemas are discovered at runtime. Validate or construct input from `inputSchema` before execution when your application needs stricter guarantees.
+
+Use a non-empty key derived from the logical operation for side effects. Reuse it only when retrying that same operation. The SDK does not reject an empty key; application validation is required. Without a key, capability execution receives one transport attempt.
+
+## Understand result and exception paths
+
+`execute()` resolves to:
+
+```typescript
+interface CapabilityResult {
+  content: Array<{ type: string; text: string }>;
+  isError: boolean;
+}
+```
+
+`isError: true` means the capability returned a failed action result. HTTP, authentication, validation, rate, quota, timeout, and network failures normally throw an SDK error instead.
+
+Adapter dispatch helpers and factory-bound functions do not accept `ExecuteOptions`. If an operation requires cancellation or an idempotency key, resolve the `Capability` and call `execute()` directly.
+
+## Convert only at the model boundary
+
+Adapters preserve display names, descriptions, and input schemas in provider or framework shapes. Keep the original `CapabilitySet` for dispatch, user scoping, and direct execution; do not attempt to reconstruct capabilities from the converted tool definitions.
+
+## Next steps
+
+- [Compare adapter outputs and result handling](/adapters/overview)
+- [Trace the underlying request path](/concepts/architecture)
+- [Handle retries and both failure channels](/guides/error-handling)

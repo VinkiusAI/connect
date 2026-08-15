@@ -1,0 +1,90 @@
+---
+title: Workers AI Adapter
+description: Convert capabilities to embedded Workers AI tool objects with bound string functions.
+---
+
+Use this adapter when your Workers AI utility accepts tool objects containing `{ name, description, parameters, function }`. Each function is already bound to the corresponding user capability.
+
+## Convert and execute
+
+This example exercises the complete adapter contract without importing an external Workers AI package.
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+import { toWorkersAITools } from '@vinkius/connect/workers-ai';
+
+const vinkius = new Vinkius({
+  appId: 'vk_app_replace_me',
+  apiKey: 'vk_app_sk_replace_me',
+});
+const capabilities = await vinkius.user('user_123').capabilities();
+const tools = toWorkersAITools(capabilities);
+
+const firstTool = tools[0];
+if (firstTool) {
+  const text = await firstTool.function({});
+  console.log(text);
+}
+```
+
+Pass `tools` to the operation in your installed Workers AI utility that accepts this embedded function shape. The adapter itself does not make a model request.
+
+## Converted format
+
+`toWorkersAITools` returns one object per capability:
+
+```typescript
+{
+  name: capability.name,
+  description: capability.description,
+  parameters: capability.inputSchema,
+  function: async (args) => string,
+}
+```
+
+A non-empty schema object is preserved. Any empty, missing, falsy, or non-object schema observed at runtime becomes `{ type: 'object', properties: {} }`.
+
+`WorkersAITool` is a local structural interface, and the package imports no Cloudflare runtime dependency. Confirm that this shape matches the external utility version installed by your application.
+
+## Naming and execution
+
+`name` uses the display name, which defaults to `${connector}__${rawName}`. The function closes over one capability and performs no name lookup, so there is no separate dispatcher or unknown-name error. Duplicate names remain duplicate array entries.
+
+The function calls `capability.execute(args)` and returns:
+
+```typescript
+result.content.map((part) => part.text).join('\n');
+```
+
+No argument parsing or validation occurs. An empty content array returns an empty string, and execution exceptions reject the promise.
+
+## Return loss and limits
+
+The embedded function returns `Promise<string>`, not `CapabilityResult`. It drops:
+
+- `result.isError`;
+- every `content[].type`;
+- content part boundaries other than inserted newlines.
+
+Call the source capability directly when you need the complete result. The embedded function has no `ExecuteOptions` argument and cannot forward an `idempotencyKey`.
+
+## Public API
+
+The `@vinkius/connect/workers-ai` subpath exports:
+
+```typescript
+interface WorkersAITool {
+  name: string;
+  description: string;
+  parameters: JSONSchema;
+  function: (args: Record<string, unknown>) => Promise<string>;
+}
+
+function toWorkersAITools(capabilities: readonly Capability[]): WorkersAITool[];
+```
+
+## Related
+
+- Compare [all adapter formats and return modes](/adapters/overview).
+- Read the [`CapabilitySet`](/reference/client#capabilityset) and [`Capability`](/reference/client#capability) references.
+- Handle direct execution with [Error Handling](/guides/error-handling).

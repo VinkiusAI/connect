@@ -1,0 +1,210 @@
+---
+title: Receitas comuns de integração
+description: Aplique padrões focados para configuração de conectores, execução direta, ferramentas restritas para modelos, cancelamento, rastreamento e cache do schema do catálogo.
+---
+
+Estas receitas usam apenas a superfície pública do SDK e deixam explícito o escopo do usuário. Combine as que sua aplicação precisa em vez de colocar todas as preocupações em uma única rota.
+
+## Reutilize um cliente no servidor
+
+```typescript
+// lib/vinkius.ts
+import { Vinkius } from '@vinkius/connect';
+
+export const vinkius = new Vinkius({
+  appId: process.env.VINKIUS_APP_ID!,
+  apiKey: process.env.VINKIUS_APP_KEY!,
+  timeoutMs: 20_000,
+  maxRetries: 2,
+});
+```
+
+O cliente armazena a configuração da aplicação, não um usuário atual. Derive `externalId` para cada requisição recebida.
+
+## Crie um formulário de conector a partir do schema do catálogo
+
+```typescript
+import type { CredentialField, CredentialSchema } from '@vinkius/connect';
+import { vinkius } from './lib/vinkius';
+
+interface FormField {
+  key: string;
+  label: string;
+  required: boolean;
+  type: CredentialField['type'];
+  docsUrl?: string;
+}
+
+async function connectorForm(slug: string): Promise<FormField[]> {
+  const schema: CredentialSchema = await vinkius
+    .user('schema-only-placeholder')
+    .connector(slug)
+    .credentials.schema();
+
+  return Object.entries(schema).map(([key, field]) => ({
+    key,
+    label: field.label ?? key,
+    required: field.required ?? false,
+    type: field.type,
+    ...(field.docs_url ? { docsUrl: field.docs_url } : {}),
+  }));
+}
+```
+
+A consulta do schema tem escopo de catálogo e não exige uma conexão real. O handle de usuário acima não faz nenhuma requisição e é usado apenas para alcançar o método fluente do schema; `vinkius.catalog.get(slug).credential_schema` é a alternativa direta de baixo nível.
+
+## Salve credenciais do conector por uma rota autenticada
+
+```typescript
+async function saveConnector(
+  externalId: string,
+  slug: string,
+  values: Record<string, string>,
+) {
+  const connector = vinkius.user(externalId).connector(slug);
+
+  await connector.connect();
+  const state = await connector.credentials.set(values);
+
+  return {
+    configured: state.configured,
+    status: await connector.status(),
+  };
+}
+```
+
+Autentique e autorize `externalId` antes dessa função. Os valores armazenados não são retornados; o resultado contém indicadores das chaves configuradas.
+
+## Renderize o estado das conexões
+
+```typescript
+const connections = await vinkius.user(externalId).connectors();
+
+const view = connections.map((connection) => ({
+  slug: connection.slug,
+  status: connection.status,
+  action:
+    connection.status === 'ready'
+      ? 'use'
+      : connection.status === 'needs_credentials'
+        ? 'update-credentials'
+        : 'review-connection',
+}));
+```
+
+`connectors()` lista as conexões existentes. Ele não acrescenta os conectores do catálogo que o usuário nunca conectou.
+
+## Execute uma ação sem um modelo
+
+```typescript
+import type { CapabilityResult } from '@vinkius/connect';
+
+async function createIssue(
+  externalId: string,
+  input: { owner: string; repo: string; title: string },
+  operationId: string,
+): Promise<CapabilityResult> {
+  const capabilities = await vinkius.user(externalId).capabilities({
+    include: ['github'],
+  });
+  const capability = capabilities.findCapability('github__create_issue');
+
+  if (!capability) {
+    throw new Error('GitHub create_issue is not available for this user');
+  }
+
+  return capability.execute(input, {
+    idempotencyKey: `create-issue:${operationId}`,
+  });
+}
+```
+
+A execução direta preserva `CapabilityResult` e aceita `ExecuteOptions`, ao contrário dos helpers de despacho dos adapters.
+
+## Forneça ao modelo o menor conjunto de conectores necessário
+
+```typescript
+const issueTools = await vinkius.user(externalId).capabilities({
+  include: ['github'],
+});
+
+if (issueTools.length === 0) {
+  return { tools: [], requiresConnection: true };
+}
+```
+
+`include` filtra no servidor. Use `exclude` para remoção local depois da agregação, ou `connector(slug).capabilities()` quando quiser especificamente uma conexão existente.
+
+Converta o conjunto somente na chamada ao modelo:
+
+```typescript
+import { toJSONSchemaTools } from '@vinkius/connect/json-schema';
+
+const definitions = toJSONSchemaTools(issueTools);
+```
+
+Mantenha `issueTools` para execução. As definições convertidas não contêm as propriedades de roteamento com escopo por usuário.
+
+## Adicione o cancelamento do chamador
+
+```typescript
+async function loadCapabilitiesWithBudget(externalId: string) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort('application budget exceeded'), 5_000);
+
+  try {
+    return await vinkius.user(externalId).capabilities({
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+```
+
+O sinal do chamador é combinado com o timeout por tentativa do cliente. Passe o sinal da requisição recebida quando for importante interromper o trabalho depois que o cliente fechar a conexão.
+
+Execuções de adapters vinculadas por fábricas e helpers de despacho não aceitam esse sinal. Chame `Capability.execute()` diretamente quando o cancelamento precisar alcançar a execução.
+
+## Rastreie tentativas e IDs de requisição
+
+```typescript
+const vinkius = new Vinkius({
+  appId: process.env.VINKIUS_APP_ID!,
+  apiKey: process.env.VINKIUS_APP_KEY!,
+  hooks: {
+    onRequest: ({ method, url }) => {
+      console.debug('Vinkius request attempt', { method, url });
+    },
+    onResponse: ({ status, requestId }) => {
+      console.debug('Vinkius response', { status, requestId });
+    },
+  },
+});
+```
+
+Os hooks executam uma vez por tentativa HTTP, portanto entradas repetidas podem representar repetições automáticas. `onRequest` não contém o corpo. `onResponse` recebe uma cópia do corpo da resposta com dados removidos por nomes fixos. Mantenha os callbacks síncronos, sem lançamentos e sem trabalho ilimitado.
+
+## Armazene em cache um schema não secreto do catálogo
+
+```typescript
+import { ResolverCache } from '@vinkius/connect';
+import type { CredentialSchema } from '@vinkius/connect';
+
+const catalogCache = new ResolverCache(10 * 60 * 1000);
+
+async function credentialSchema(slug: string): Promise<CredentialSchema> {
+  return catalogCache.resolve(`credential-schema:${slug}`, async () => {
+    const detail = await vinkius.catalog.get(slug);
+    return detail.credential_schema;
+  });
+}
+```
+
+`ResolverCache` é independente; o cliente não o usa automaticamente. Falhas simultâneas de cache não são consolidadas, entradas expiradas são removidas na leitura e computações rejeitadas não são armazenadas. Nunca armazene valores de credenciais, tokens bearer ou decisões de autorização nesse cache.
+
+## Próximos passos
+
+- [Escolha o formato de adapter necessário para seu runtime](/pt/adapters/overview)
+- [Implemente as ramificações de repetição e erro](/pt/guides/error-handling)
+- [Revise todos os métodos públicos](/pt/reference/client)

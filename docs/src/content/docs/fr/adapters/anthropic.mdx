@@ -1,0 +1,107 @@
+---
+title: Adaptateur Anthropic
+description: Convertissez les capacités en définitions d’outils Messages et dispatchez les blocs tool_use.
+---
+
+Utilisez cet adaptateur lorsque votre application échange des définitions d’outils au format Messages et reçoit des blocs `tool_use`. La conversion et l’exécution sont deux opérations distinctes.
+
+## Convertir et dispatcher
+
+Cet exemple construit uniquement le bloc structurel lu par la fonction de dispatch ; il ne dépend d’aucune API client externe.
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+import { runAnthropicToolUse, toAnthropicTools, type AnthropicToolUse } from '@vinkius/connect/anthropic';
+
+const vinkius = new Vinkius({
+  appId: 'vk_app_replace_me',
+  apiKey: 'vk_app_sk_replace_me',
+});
+const capabilities = await vinkius.user('user_123').capabilities();
+const tools = toAnthropicTools(capabilities);
+
+const firstTool = tools[0];
+if (firstTool) {
+  const returnedUse: AnthropicToolUse = {
+    name: firstTool.name,
+    input: {},
+  };
+
+  const result = await runAnthropicToolUse(capabilities, returnedUse);
+  console.log(result.content, result.isError);
+}
+```
+
+Transmettez `tools` à l’opération de votre client installé qui accepte cette forme. Après l’exécution, votre application doit convertir `CapabilityResult` en bloc de réponse attendu par sa boucle de conversation.
+
+## Format converti
+
+`toAnthropicTools` renvoie une entrée par capacité :
+
+```typescript
+{
+  name: capability.name,
+  description: capability.description,
+  input_schema: capability.inputSchema,
+}
+```
+
+Un schéma n’est conservé que s’il s’agit d’un objet non vide ; sinon, `input_schema` devient `{ type: 'object', properties: {} }`. Aucune validation ni réécriture de schéma n’est effectuée.
+
+L’adaptateur n’a aucune dépendance d’exécution envers un package Anthropic. Ses exports décrivent un sous-ensemble structurel. Vérifiez ce sous-ensemble par rapport à la version du SDK externe installée par votre application.
+
+## Nommage et dispatch
+
+`runAnthropicToolUse` compare `use.name` au nom d’affichage de la capacité. Il ne le compare pas à `rawName`. Par défaut, les noms d’affichage valent `${connector}__${rawName}`.
+
+La première capacité dont le nom d’affichage correspond est exécutée ; des noms d’affichage dupliqués dépendent donc de l’ordre. Utilisez le même tableau de capacités pour la conversion et le dispatch.
+
+Une valeur `input` nullish observée à l’exécution devient `{}`. Pour le reste, l’adaptateur transmet l’objet d’entrée sans validation ni coercition.
+
+Un nom inconnu lève une simple `Error("Unknown capability: …")`.
+
+## Résultats et limites
+
+La fonction de dispatch conserve le `CapabilityResult` complet, y compris chaque partie de contenu et `isError` :
+
+```typescript
+const result = await runAnthropicToolUse(capabilities, returnedUse);
+
+if (result.isError) {
+  // La capacité s’est terminée avec un résultat d’erreur.
+}
+```
+
+Une valeur `isError: true` renvoyée n’est pas levée. Les exceptions provenant de l’exécution de la capacité rejettent toujours la promesse.
+
+La fonction utilitaire ne crée pas de bloc de réponse du fournisseur et ne poursuit pas la boucle du modèle. Elle n’accepte pas non plus `ExecuteOptions` ou une `idempotencyKey` ; appelez directement la `Capability` correspondante lorsque ces options sont requises.
+
+## API publique
+
+Le sous-chemin `@vinkius/connect/anthropic` exporte :
+
+```typescript
+interface AnthropicTool {
+  name: string;
+  description: string;
+  input_schema: JSONSchema;
+}
+
+interface AnthropicToolUse {
+  name: string;
+  input: Record<string, unknown>;
+}
+
+function toAnthropicTools(capabilities: readonly Capability[]): AnthropicTool[];
+
+function runAnthropicToolUse(
+  capabilities: readonly Capability[],
+  use: AnthropicToolUse,
+): Promise<CapabilityResult>;
+```
+
+## Voir aussi
+
+- Comparez [tous les formats d’adaptateur](/fr/adapters/overview).
+- Consultez les références de [`CapabilitySet`](/fr/reference/client#capabilityset) et de [`Capability`](/fr/reference/client#capability).
+- Distinguez les échecs de résultat des exceptions avec la [gestion des erreurs](/fr/guides/error-handling).

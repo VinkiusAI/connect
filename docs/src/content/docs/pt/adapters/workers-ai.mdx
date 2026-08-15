@@ -1,0 +1,90 @@
+---
+title: Adaptador para Workers AI
+description: Converta capacidades em objetos de ferramentas incorporadas do Workers AI com funções vinculadas que retornam strings.
+---
+
+Use este adapter quando seu utilitário do Workers AI aceitar objetos de ferramentas que contenham `{ name, description, parameters, function }`. Cada função já está vinculada à capacidade de usuário correspondente.
+
+## Converta e execute
+
+Este exemplo exercita o contrato completo do adapter sem importar um pacote externo do Workers AI.
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+import { toWorkersAITools } from '@vinkius/connect/workers-ai';
+
+const vinkius = new Vinkius({
+  appId: 'vk_app_replace_me',
+  apiKey: 'vk_app_sk_replace_me',
+});
+const capabilities = await vinkius.user('user_123').capabilities();
+const tools = toWorkersAITools(capabilities);
+
+const firstTool = tools[0];
+if (firstTool) {
+  const text = await firstTool.function({});
+  console.log(text);
+}
+```
+
+Passe `tools` para a operação no utilitário do Workers AI instalado que aceite esse formato de função incorporada. O próprio adapter não faz uma requisição ao modelo.
+
+## Formato convertido
+
+`toWorkersAITools` retorna um objeto por capacidade:
+
+```typescript
+{
+  name: capability.name,
+  description: capability.description,
+  parameters: capability.inputSchema,
+  function: async (args) => string,
+}
+```
+
+Um objeto de schema não vazio é preservado. Qualquer schema de runtime vazio, ausente, falsy ou que não seja objeto se torna `{ type: 'object', properties: {} }`.
+
+`WorkersAITool` é uma interface estrutural local, e o pacote não importa dependência de runtime da Cloudflare. Confirme se esse formato corresponde à versão do utilitário externo instalada pela sua aplicação.
+
+## Nomenclatura e execução
+
+`name` usa o nome de exibição, cujo padrão é `${connector}__${rawName}`. A função captura uma capacidade e não executa consulta por nome, portanto não há dispatcher separado nem erro por nome desconhecido. Nomes duplicados permanecem entradas duplicadas no array.
+
+A função chama `capability.execute(args)` e retorna:
+
+```typescript
+result.content.map((part) => part.text).join('\n');
+```
+
+Nenhuma interpretação ou validação dos argumentos é executada. Um array de conteúdo vazio retorna uma string vazia, e exceções da execução rejeitam a promise.
+
+## Perda no retorno e limitações
+
+A função incorporada retorna `Promise<string>`, não `CapabilityResult`. Ela descarta:
+
+- `result.isError`;
+- cada `content[].type`;
+- os limites entre as partes do conteúdo, exceto pelas quebras de linha inseridas.
+
+Chame a capacidade de origem diretamente quando precisar do resultado completo. A função incorporada não tem um argumento `ExecuteOptions` e não pode encaminhar uma `idempotencyKey`.
+
+## API pública
+
+O subpath `@vinkius/connect/workers-ai` exporta:
+
+```typescript
+interface WorkersAITool {
+  name: string;
+  description: string;
+  parameters: JSONSchema;
+  function: (args: Record<string, unknown>) => Promise<string>;
+}
+
+function toWorkersAITools(capabilities: readonly Capability[]): WorkersAITool[];
+```
+
+## Relacionado
+
+- Compare [todos os formatos e modos de retorno dos adapters](/pt/adapters/overview).
+- Leia as referências de [`CapabilitySet`](/pt/reference/client#capabilityset) e [`Capability`](/pt/reference/client#capability).
+- Trate a execução direta com [Tratamento de erros](/pt/guides/error-handling).

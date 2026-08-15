@@ -1,0 +1,188 @@
+---
+title: Handle execution results, request errors, and retries
+description: Separate capability failures from SDK exceptions, preserve request IDs, and repeat side effects only with a stable idempotency key.
+---
+
+A capability can fail in two different ways. The connector can return a completed result with `isError: true`, or the SDK can throw because configuration, authentication, validation, quota, transport, or the HTTP request failed. Your control flow must handle both.
+
+## Check capability failure as returned data
+
+```typescript
+const result = await capability.execute(args, {
+  idempotencyKey: 'create-issue:operation-8042',
+});
+
+const message = result.content.map((part) => part.text).join('\n');
+
+if (result.isError) {
+  // Return the tool result to the model or map it to an application message.
+  console.error('Capability failed:', message);
+} else {
+  console.log('Capability completed:', message);
+}
+```
+
+`isError` is not thrown. A successful HTTP exchange can still produce a failed external action—for example, when the connected service rejects the requested operation.
+
+## Narrow thrown errors from most specific to general
+
+```typescript
+import {
+  AuthError,
+  ConnectionError,
+  ConnectorNotConnectedError,
+  OverageError,
+  QuotaError,
+  RateLimitError,
+  ValidationError,
+  VinkiusError,
+} from '@vinkius/connect';
+
+async function executeAction() {
+  try {
+    return await capability.execute(args, {
+      idempotencyKey: 'create-issue:operation-8042',
+    });
+  } catch (error: unknown) {
+    if (error instanceof ConnectorNotConnectedError) {
+      return { kind: 'reconnect' as const };
+    }
+
+    if (error instanceof ValidationError) {
+      return { kind: 'invalid-input' as const, fields: error.errors };
+    }
+
+    if (error instanceof AuthError) {
+      return { kind: 'application-auth' as const, requestId: error.requestId };
+    }
+
+    if (error instanceof RateLimitError) {
+      return { kind: 'rate-limit' as const, retryAfterMs: error.retryAfterMs };
+    }
+
+    if (error instanceof QuotaError || error instanceof OverageError) {
+      return { kind: 'plan-limit' as const, upgradeUrl: error.upgradeUrl };
+    }
+
+    if (error instanceof ConnectionError) {
+      return { kind: 'transport' as const, message: error.message };
+    }
+
+    if (error instanceof VinkiusError) {
+      return {
+        kind: 'api' as const,
+        code: error.code,
+        status: error.status,
+        requestId: error.requestId,
+      };
+    }
+
+    throw error;
+  }
+}
+```
+
+Every `VinkiusError` has `code`, `status`, `requestId`, and `details`. Local and transport errors use status `0`. `requestId` is present only when the server supplied one.
+
+| Error class | Typical cause | Additional data |
+| --- | --- | --- |
+| `ConfigError` | Invalid client option or `externalId` | — |
+| `AuthError` | HTTP `401` or `403` | — |
+| `NotFoundError` | HTTP `404` | — |
+| `ValidationError` | HTTP `422` | `errors` |
+| `RateLimitError` | Control-plane HTTP `429` | `retryAfterMs` |
+| `QuotaError` | Capability quota HTTP `429` | `upgradeUrl` |
+| `OverageError` | HTTP `402` | `upgradeUrl` |
+| `ConnectorNotConnectedError` | Operation requires a connection | — |
+| `ConnectionError` | Network failure, timeout, or caller abort during fetch | `cause` when available |
+| `VinkiusError` | Other non-success response | `details` |
+
+`NotImplementedError` is exported, but no active SDK call site was observed to throw it. Do not build normal application control flow around it.
+
+## Know which requests the SDK repeats
+
+The default client allows two retries after the initial attempt. A request is repeated only when both conditions hold:
+
+1. The failure is a network error, timeout, or HTTP `429`, `502`, `503`, or `504`.
+2. The operation is classified as repeatable.
+
+Repeatable operations are:
+
+- all `GET`, `PUT`, and `DELETE` requests;
+- user creation/upsert;
+- connection get-or-create;
+- capability execution when `idempotencyKey` is supplied.
+
+`Retry-After` is accepted as seconds or an HTTP date and capped by the transport's 4-second backoff cap. Each attempt has its own `timeoutMs` budget.
+
+The transport classifies all `429` responses before mapping the final error, so an idempotent operation can retry a quota response before eventually throwing `QuotaError`.
+
+## Generate and validate execution keys in your application
+
+```typescript
+function executionKey(kind: string, operationId: string): string {
+  if (!kind || !operationId) {
+    throw new Error('kind and operationId are required');
+  }
+  return `${kind}:${operationId}`;
+}
+
+const result = await capability.execute(args, {
+  idempotencyKey: executionKey('create-issue', operationId),
+});
+```
+
+A key identifies one logical side effect:
+
+- reuse it for retries of that same operation;
+- use a new key for a new operation;
+- never use an empty string;
+- store the operation ID when a request may outlive the incoming HTTP connection.
+
+The SDK does not validate non-emptiness. Because execution retry checks `undefined` while the header is sent only for a truthy value, `''` can enable retry without sending `Idempotency-Key`.
+
+Without a key, execution receives one transport attempt. If that attempt times out, the external action may still have completed. Reconcile state before issuing a new operation.
+
+## Do not rely on adapter dispatch for execution options
+
+Dispatcher helpers and factory-bound adapter functions call `capability.execute(args)` without `signal` or `idempotencyKey`. For a cancelable or retriable side effect, resolve the original capability and call it directly:
+
+```typescript
+const selected = capabilities.findCapability(returnedToolName);
+if (!selected) throw new Error(`Unknown capability: ${returnedToolName}`);
+
+const result = await selected.execute(returnedArgs, {
+  signal: request.signal,
+  idempotencyKey: executionKey('model-tool', operationId),
+});
+```
+
+Unknown names passed to adapter dispatchers throw plain `Error`, not `VinkiusError`.
+
+## Record diagnostics without recording secrets
+
+```typescript
+try {
+  await executeAction();
+} catch (error: unknown) {
+  if (error instanceof VinkiusError) {
+    console.error('Vinkius request failed', {
+      code: error.code,
+      status: error.status,
+      requestId: error.requestId,
+      operationId,
+    });
+  }
+  throw error;
+}
+```
+
+Avoid logging `error.details` without reviewing it. Hook response bodies use fixed-name redaction, but error details retain the original parsed body. Do not log credential values, authorization headers, or submitted tool input indiscriminately.
+
+Hook callbacks can also throw their original errors, and aborting during retry backoff can propagate the signal reason directly. Keep a final `unknown` branch instead of assuming every thrown value is a `VinkiusError`.
+
+## Next steps
+
+- [Diagnose failures by symptom](/guides/troubleshooting)
+- [Use focused integration recipes](/guides/recipes)
+- [Review the complete error reference](/reference/client#errors-and-request-ids)

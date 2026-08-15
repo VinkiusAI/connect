@@ -1,0 +1,106 @@
+---
+title: Adaptador para OpenAI Agents
+description: Crie ferramentas de agente por meio de uma fábrica injetada e execute capacidades como callbacks que retornam strings.
+---
+
+Use este adapter quando seu framework de agentes construir ferramentas por meio de uma fábrica `tool(config)` na forma de objeto. Sua aplicação fornece essa fábrica; o adapter fornece uma configuração por capacidade.
+
+## Converta e execute
+
+A fábrica identidade abaixo torna o exemplo autocontido enquanto preserva o contrato exato do adapter. Em uma aplicação, substitua-a pela fábrica da versão do framework que você usa quando sua assinatura corresponder.
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+import { toOpenAIAgentsTools, type OpenAIAgentsToolFactory } from '@vinkius/connect/openai-agents';
+
+type ExampleAgentTool = {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  strict: boolean;
+  execute: (args: Record<string, unknown>) => Promise<string>;
+};
+
+const tool: OpenAIAgentsToolFactory<ExampleAgentTool> = (config) => config;
+
+const vinkius = new Vinkius({
+  appId: 'vk_app_replace_me',
+  apiKey: 'vk_app_sk_replace_me',
+});
+const capabilities = await vinkius.user('user_123').capabilities();
+const tools = toOpenAIAgentsTools(capabilities, { tool });
+
+const firstTool = tools[0];
+if (firstTool) {
+  const text = await firstTool.execute({});
+  console.log(text);
+}
+```
+
+Não há dispatcher separado. Cada ferramenta retornada captura a capacidade da mesma posição no array.
+
+## Contrato da fábrica
+
+Para cada capacidade, `toOpenAIAgentsTools` chama a fábrica injetada uma vez:
+
+```typescript
+tool({
+  name: capability.name,
+  description: capability.description,
+  parameters: capability.inputSchema,
+  strict: false,
+  execute: async (args) => string,
+});
+```
+
+Um schema é repassado quando é um objeto não vazio; caso contrário, ele se torna `{ type: 'object', properties: {} }`.
+
+`strict` é sempre `false`. O adapter não valida nem reescreve schemas de conectores para um modo de schema estrito. Ele não tem dependência de runtime de um pacote Agents e retorna exatamente os valores `T` criados pela fábrica injetada. Esta é uma integração estrutural, não uma promessa sobre versões de framework não testadas.
+
+## Nomenclatura e execução
+
+A fábrica recebe o nome de exibição, cujo padrão é `${connector}__${rawName}`. O callback não consulta um nome no momento da execução, portanto não pode lançar um erro por nome desconhecido. Nomes de exibição duplicados permanecem entradas duplicadas no array retornado; qualquer tratamento posterior fica fora deste adapter.
+
+O callback vinculado chama `capability.execute(args)` e converte o resultado com:
+
+```typescript
+result.content.map((part) => part.text).join('\n');
+```
+
+Um array de conteúdo vazio se torna uma string vazia. Exceções ainda rejeitam a promise do callback.
+
+## Perda no retorno e limitações
+
+O callback retorna `Promise<string>`, não `Promise<CapabilityResult>`. A conversão descarta:
+
+- `result.isError`, incluindo a distinção entre sucesso e um resultado de erro;
+- cada valor de `content[].type`;
+- os limites entre as partes do conteúdo, exceto pelos caracteres de quebra de linha inseridos.
+
+Execute a `Capability` original diretamente quando seu loop precisar do resultado completo. O callback também não tem um parâmetro `ExecuteOptions`, portanto não pode encaminhar `idempotencyKey`.
+
+## API pública
+
+O subpath `@vinkius/connect/openai-agents` exporta:
+
+```typescript
+type OpenAIAgentsToolFactory<T> = (config: {
+  name: string;
+  description: string;
+  parameters: JSONSchema;
+  strict: boolean;
+  execute: (args: Record<string, unknown>) => Promise<string>;
+}) => T;
+
+interface ToOpenAIAgentsOptions<T> {
+  tool: OpenAIAgentsToolFactory<T>;
+}
+
+function toOpenAIAgentsTools<T>(capabilities: readonly Capability[], options: ToOpenAIAgentsOptions<T>): T[];
+```
+
+## Relacionado
+
+- Use o [adapter `openai`](/pt/adapters/openai) para despacho explícito de Chat Completions.
+- Compare [todos os modos de retorno dos adapters](/pt/adapters/overview).
+- Execute capacidades diretamente com a [API de `Capability`](/pt/reference/client#capability).

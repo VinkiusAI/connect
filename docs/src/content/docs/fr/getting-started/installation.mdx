@@ -1,0 +1,110 @@
+---
+title: Installer et initialiser le SDK
+description: Ajoutez @vinkius/connect à un environnement d’exécution serveur, configurez les identifiants de l’application et vérifiez la connexion à l’API.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Installez le paquet dans votre backend et créez une instance `Vinkius` réutilisable. Le client enregistre la configuration au niveau de l’application, et non l’état propre à chaque utilisateur ; une même instance peut donc traiter les requêtes de nombreux utilisateurs.
+
+## Prérequis
+
+- Node.js 18 ou version ultérieure, ou un autre environnement d’exécution serveur qui fournit `fetch`
+- Un App ID Vinkius commençant par `vk_app_`
+- Une Application Key Vinkius commençant par `vk_app_sk_`
+
+## Installer le paquet
+
+```bash
+npm install @vinkius/connect
+```
+
+Les commandes équivalentes sont `pnpm add @vinkius/connect`, `yarn add @vinkius/connect` et `bun add @vinkius/connect`.
+
+## Configurer les variables d’environnement du serveur
+
+```bash
+VINKIUS_APP_ID=vk_app_xxxxxxxxxxxxxxxx
+VINKIUS_APP_KEY=vk_app_sk_xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+<Aside type="caution">
+  `VINKIUS_APP_KEY` autorise les requêtes API. Conservez-la dans l’environnement serveur ou dans un stockage de secrets. Ne l’utilisez pas dans le code du navigateur, les fichiers binaires mobiles, les journaux publics ni le contexte du modèle.
+</Aside>
+
+## Créer un module réservé au serveur
+
+```typescript
+// lib/vinkius.ts — import this module only from server code
+import { Vinkius } from '@vinkius/connect';
+
+function required(name: 'VINKIUS_APP_ID' | 'VINKIUS_APP_KEY'): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`Missing ${name}`);
+  return value;
+}
+
+export const vinkius = new Vinkius({
+  appId: required('VINKIUS_APP_ID'),
+  apiKey: required('VINKIUS_APP_KEY'),
+});
+```
+
+Le constructeur vérifie les préfixes de l’App ID et de la clé, analyse `baseUrl` lorsqu’elle est fournie et exige une implémentation de `fetch`. Il n’effectue aucune requête. Il ne vérifie pas à l’exécution la plage de chaque nombre facultatif ni chaque fonction de rappel ; gardez donc `timeoutMs`, `maxRetries`, les hooks et les fonctions de nommage personnalisées sous le contrôle de l’application.
+
+Si votre environnement d’exécution ne possède pas de `fetch` global, transmettez une implémentation compatible :
+
+```typescript
+const vinkius = new Vinkius({
+  appId,
+  apiKey,
+  fetch: customFetch,
+});
+```
+
+## Vérifier les identifiants au moyen d’une requête
+
+Une vérification limitée à un objet intermédiaire ne contacte pas l’API. Utilisez une lecture du catalogue pour un véritable test rapide :
+
+```typescript
+import { VinkiusError } from '@vinkius/connect';
+import { vinkius } from './lib/vinkius';
+
+async function checkVinkiusConnection(): Promise<void> {
+  try {
+    const page = await vinkius.catalog.list({ page: 1 });
+    console.log(`Vinkius API reachable; received ${page.data.length} connectors`);
+  } catch (error: unknown) {
+    if (error instanceof VinkiusError) {
+      console.error({
+        code: error.code,
+        status: error.status,
+        requestId: error.requestId,
+      });
+    }
+    throw error;
+  }
+}
+
+await checkVinkiusConnection();
+```
+
+Cette vérification confirme que l’environnement d’exécution peut joindre l’API et que les identifiants de l’application sont acceptés. Une `ConfigError` locale survient avant toute requête ; `AuthError` représente une réponse HTTP `401` ou `403`.
+
+## Créer un objet utilisateur
+
+```typescript
+const user = vinkius.user('alice_123');
+```
+
+`user()` n’effectue aucune requête. L’identifiant doit être l’identifiant utilisateur stable de votre application : de 1 à 255 caractères, sans commencer par `vk_app_user_` et sans espace, `/` ni `\`.
+
+<Aside type="note">
+  `user.ensure(metadata)` est facultatif. Appelez cette méthode lorsque vous avez besoin d’une création ou mise à jour explicite par l’API, ou souhaitez joindre des métadonnées non secrètes, et non simplement pour obtenir un objet intermédiaire.
+</Aside>
+
+## Étapes suivantes
+
+- [Suivre le démarrage rapide, de la connexion à l’exécution](/fr/)
+- [Associer `externalId` à une session authentifiée](/fr/guides/multi-tenant)
+- [Consulter toutes les options du constructeur](/fr/reference/client#créer-un-client)

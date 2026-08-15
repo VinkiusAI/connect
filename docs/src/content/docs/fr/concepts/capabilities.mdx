@@ -1,0 +1,123 @@
+---
+title: Charger, sélectionner et exécuter des capacités
+description: Agrégez les actions d’un utilisateur, filtrez la portée des connecteurs, résolvez les collisions de noms et exécutez avec annulation ou idempotence.
+---
+
+Une capacité est une action renvoyée pour la connexion d’un utilisateur donné. Elle combine la description destinée au modèle et le schéma JSON avec la route de connexion nécessaire à l’exécution de l’action.
+
+Utilisez la méthode agrégée de l’utilisateur lorsqu’un assistant peut intervenir sur plusieurs connecteurs, ou un objet connecteur lorsqu’un seul compte connecté doit fournir des actions.
+
+## Agréger les capacités d’un utilisateur
+
+```typescript
+const user = vinkius.user('alice_123');
+const capabilities = await user.capabilities();
+```
+
+Cet appel effectue une requête au point d’accès des capacités de l’utilisateur et convertit chaque élément renvoyé en `Capability` exécutable. Le point d’accès détermine quelles connexions fournissent des actions ; le client n’effectue pas une seconde vérification de leur état de préparation.
+
+Un `CapabilitySet` vide est valide. Il peut signifier que l’utilisateur ne dispose d’aucune action, qu’aucune connexion ne correspond au filtre demandé ou que le service n’en a renvoyé aucune. Traitez ce cas explicitement :
+
+```typescript
+if (capabilities.length === 0) {
+  return { tools: [], message: 'Connect an account before requesting this action.' };
+}
+```
+
+## Limiter la portée des connecteurs
+
+```typescript
+const selected = await user.capabilities({
+  include: ['github', 'slack'],
+  exclude: ['slack'],
+});
+```
+
+`include` est transmis au serveur comme filtre de connecteur. `exclude` est appliqué par le SDK après la réponse. Dans cet exemple, la requête demande GitHub et Slack, puis supprime Slack localement.
+
+Pour un connecteur unique, utilisez son objet :
+
+```typescript
+const githubCapabilities = await user.connector('github').capabilities();
+```
+
+La recherche limitée à un connecteur exige une connexion existante et peut commencer par répertorier les connexions afin de résoudre son identifiant. Elle lève `ConnectorNotConnectedError` lorsqu’aucune correspondance n’existe.
+
+## Examiner le contrat de la capacité
+
+```typescript
+for (const capability of capabilities) {
+  console.log({
+    name: capability.name,
+    rawName: capability.rawName,
+    connector: capability.connector,
+    connectionId: capability.connectionId,
+    title: capability.title,
+    description: capability.description,
+    inputSchema: capability.inputSchema,
+  });
+}
+```
+
+Par défaut, `name` vaut `${connector}__${rawName}`, par exemple `github__create_issue`. `rawName` est le nom d’action du connecteur et correspond à la valeur que le SDK envoie pour l’exécution. Vous pouvez remplacer la fonction de nom d’affichage par `namespaceCapability` dans le constructeur du client, mais les adaptateurs ne vérifient pas les règles de nommage des fournisseurs.
+
+## Sélectionner sans supposer la disponibilité
+
+`CapabilitySet` étend `Array<Capability>` et ajoute deux méthodes utilitaires :
+
+```typescript
+const githubOnly = capabilities.forConnector('github');
+const createIssue = githubOnly.findCapability('github__create_issue');
+```
+
+`forConnector()` compare exactement les slugs des connecteurs. `findCapability()` accepte un nom d’affichage ou un nom brut et renvoie la première correspondance. Les noms bruts peuvent entrer en collision : deux connecteurs peuvent par exemple exposer `search`. Préférez un nom d’affichage unique ou filtrez d’abord par connecteur.
+
+## Exécuter avec le schéma renvoyé
+
+```typescript
+if (!createIssue) {
+  throw new Error('The requested action is not available for this user');
+}
+
+const result = await createIssue.execute(
+  { owner: 'acme', repo: 'product', title: 'Document retries' },
+  {
+    idempotencyKey: 'create-issue:operation-8042',
+    signal: request.signal,
+  },
+);
+
+const output = result.content.map((part) => part.text).join('\n');
+if (result.isError) {
+  console.error(output);
+}
+```
+
+Les arguments sont de type `Record<string, unknown>`, car les schémas sont découverts à l’exécution. Validez ou construisez l’entrée à partir d’`inputSchema` avant l’exécution lorsque votre application exige des garanties plus strictes.
+
+Utilisez pour les effets de bord une clé non vide dérivée de l’opération logique. Ne la réutilisez que pour retenter cette même opération. Le SDK ne refuse pas une clé vide ; l’application doit donc la valider. Sans clé, l’exécution de la capacité n’effectue qu’une tentative de transport.
+
+## Comprendre les voies de résultat et d’exception
+
+`execute()` produit :
+
+```typescript
+interface CapabilityResult {
+  content: Array<{ type: string; text: string }>;
+  isError: boolean;
+}
+```
+
+`isError: true` signifie que la capacité a renvoyé l’échec d’une action. Les échecs HTTP, d’authentification, de validation, de limitation de débit, de quota, de délai d’attente et de réseau lèvent normalement une erreur du SDK.
+
+Les fonctions d’acheminement des adaptateurs et les fonctions liées par une fabrique n’acceptent pas `ExecuteOptions`. Si une opération exige une annulation ou une clé d’idempotence, résolvez la `Capability` et appelez directement `execute()`.
+
+## Convertir uniquement à la frontière avec le modèle
+
+Les adaptateurs conservent les noms d’affichage, les descriptions et les schémas d’entrée dans des structures de fournisseur ou d’infrastructure logicielle. Conservez le `CapabilitySet` d’origine pour l’acheminement, la portée utilisateur et l’exécution directe ; n’essayez pas de reconstruire les capacités à partir des définitions d’outils converties.
+
+## Étapes suivantes
+
+- [Comparer les sorties des adaptateurs et la gestion des résultats](/fr/adapters/overview)
+- [Suivre le chemin de requête sous-jacent](/fr/concepts/architecture)
+- [Gérer les nouvelles tentatives et les deux voies d’échec](/fr/guides/error-handling)

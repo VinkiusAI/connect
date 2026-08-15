@@ -1,0 +1,106 @@
+---
+title: Adaptateur OpenAI Agents
+description: Construisez des outils d’agent au moyen d’une fabrique injectée et exécutez les capacités sous forme de callbacks qui renvoient des chaînes.
+---
+
+Utilisez cet adaptateur lorsque votre framework d’agent construit ses outils au moyen d’une fabrique `tool(config)` sous forme d’objet. Votre application fournit cette fabrique ; l’adaptateur fournit une configuration par capacité.
+
+## Convertir et exécuter
+
+La fabrique identité ci-dessous rend l’exemple autonome tout en préservant le contrat exact de l’adaptateur. Dans une application, remplacez-la par la fabrique de la version du framework que vous utilisez lorsque sa signature correspond.
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+import { toOpenAIAgentsTools, type OpenAIAgentsToolFactory } from '@vinkius/connect/openai-agents';
+
+type ExampleAgentTool = {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  strict: boolean;
+  execute: (args: Record<string, unknown>) => Promise<string>;
+};
+
+const tool: OpenAIAgentsToolFactory<ExampleAgentTool> = (config) => config;
+
+const vinkius = new Vinkius({
+  appId: 'vk_app_replace_me',
+  apiKey: 'vk_app_sk_replace_me',
+});
+const capabilities = await vinkius.user('user_123').capabilities();
+const tools = toOpenAIAgentsTools(capabilities, { tool });
+
+const firstTool = tools[0];
+if (firstTool) {
+  const text = await firstTool.execute({});
+  console.log(text);
+}
+```
+
+Il n’existe aucune fonction de dispatch distincte. Chaque outil renvoyé capture la capacité qui occupe la même position dans le tableau.
+
+## Contrat de la fabrique
+
+Pour chaque capacité, `toOpenAIAgentsTools` appelle une fois la fabrique injectée :
+
+```typescript
+tool({
+  name: capability.name,
+  description: capability.description,
+  parameters: capability.inputSchema,
+  strict: false,
+  execute: async (args) => string,
+});
+```
+
+Un schéma est transmis tel quel lorsqu’il s’agit d’un objet non vide ; sinon, il devient `{ type: 'object', properties: {} }`.
+
+`strict` vaut toujours `false`. L’adaptateur ne valide ni ne réécrit les schémas des connecteurs pour un mode de schéma strict. Il n’a aucune dépendance d’exécution envers un package Agents et renvoie exactement les valeurs `T` créées par la fabrique injectée. Il s’agit d’une intégration structurelle, et non d’une promesse concernant des versions de framework non testées.
+
+## Nommage et exécution
+
+La fabrique reçoit le nom d’affichage, qui vaut par défaut `${connector}__${rawName}`. Le callback ne recherche aucun nom au moment de l’exécution ; il ne peut donc pas lever d’erreur pour un nom inconnu. Les noms d’affichage dupliqués restent des entrées dupliquées dans le tableau renvoyé ; leur traitement en aval n’incombe pas à cet adaptateur.
+
+Le callback lié appelle `capability.execute(args)` et convertit le résultat avec :
+
+```typescript
+result.content.map((part) => part.text).join('\n');
+```
+
+Un tableau de contenu vide devient une chaîne vide. Les exceptions rejettent toujours la promesse du callback.
+
+## Perte d’informations et limites
+
+Le callback renvoie `Promise<string>`, et non `Promise<CapabilityResult>`. La conversion supprime :
+
+- `result.isError`, y compris la distinction entre une réussite et un résultat d’erreur ;
+- chaque valeur `content[].type` ;
+- les frontières entre les parties du contenu, à l’exception des caractères de saut de ligne insérés.
+
+Exécutez directement la `Capability` d’origine lorsque votre boucle a besoin du résultat complet. Le callback ne possède pas non plus de paramètre `ExecuteOptions` et ne peut donc pas transmettre `idempotencyKey`.
+
+## API publique
+
+Le sous-chemin `@vinkius/connect/openai-agents` exporte :
+
+```typescript
+type OpenAIAgentsToolFactory<T> = (config: {
+  name: string;
+  description: string;
+  parameters: JSONSchema;
+  strict: boolean;
+  execute: (args: Record<string, unknown>) => Promise<string>;
+}) => T;
+
+interface ToOpenAIAgentsOptions<T> {
+  tool: OpenAIAgentsToolFactory<T>;
+}
+
+function toOpenAIAgentsTools<T>(capabilities: readonly Capability[], options: ToOpenAIAgentsOptions<T>): T[];
+```
+
+## Voir aussi
+
+- Utilisez l’[adaptateur `openai`](/fr/adapters/openai) pour un dispatch explicite des Chat Completions.
+- Comparez [tous les modes de retour des adaptateurs](/fr/adapters/overview).
+- Exécutez directement les capacités avec l’[API `Capability`](/fr/reference/client#capability).

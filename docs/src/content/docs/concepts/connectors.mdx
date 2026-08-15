@@ -1,0 +1,122 @@
+---
+title: Configure and inspect a user connector
+description: Discover credential fields, create a user-scoped connection, write credentials, inspect readiness, and disconnect the account.
+---
+
+A connector describes an integration in the catalog. A connection is that connector configured for one application user. This page builds a server-side setup flow without assuming credential field names.
+
+The SDK has no hosted credential form or OAuth UI API. Your application renders and authorizes the setup experience, then calls the connector methods from its backend.
+
+## Create a lazy connector handle
+
+```typescript
+const user = vinkius.user('alice_123');
+const github = user.connector('github');
+```
+
+Neither line sends a request. The handle retains the user scope and slug for later operations. Connector slugs are passed through to the API; unlike `externalId`, the constructor does not apply a dedicated slug validator.
+
+## Read required credential fields
+
+```typescript
+const schema = await github.credentials.schema();
+
+for (const [key, field] of Object.entries(schema)) {
+  console.log(key, field.type, field.required ?? false);
+}
+```
+
+`schema()` reads catalog detail and works before a connection exists. A field can include `type`, `label`, `required`, `group`, `docs_url`, `placeholder`, and `allowed` values. Use these descriptors to build or validate your own form.
+
+## Create the connection and store values
+
+```typescript
+async function configureConnector(
+  externalId: string,
+  slug: string,
+  values: Record<string, string>,
+) {
+  const connector = vinkius.user(externalId).connector(slug);
+
+  const connection = await connector.connect();
+  const credentialState = await connector.credentials.set(values);
+  const status = await connector.status();
+
+  return {
+    connectionId: connection.id,
+    configured: credentialState.configured,
+    status,
+  };
+}
+```
+
+`connect()` performs a request. Under the Vinkius API contract, it is get-or-create for the user and connector, so the SDK marks the operation idempotent for transient retries. Calling it repeatedly still performs network I/O.
+
+The handle memoizes the returned connection ID. Subsequent `credentials.set()`, `credentials.status()`, or connector-scoped `capabilities()` calls on that same handle can use it without another lookup.
+
+## Interpret connector status
+
+```typescript
+const status = await github.status();
+```
+
+| Status | Derived condition | Typical application response |
+| --- | --- | --- |
+| `not_connected` | No matching connection | Offer the connector setup flow |
+| `needs_credentials` | Connection is active but `ready` is false | Collect or replace required values |
+| `ready` | Connection is active and `ready` is true | Load capabilities |
+| `disabled` | Connection status is not active | Tell the user the connection cannot currently execute |
+
+`status()` lists connections and returns `not_connected` instead of throwing when none exists. `credentials.status()`, `credentials.set()`, `disconnect()`, and connector-scoped `capabilities()` require a connection and can throw `ConnectorNotConnectedError`.
+
+## Credential values are write-only
+
+```typescript
+const state = await github.credentials.status();
+
+console.log(state.schema);
+console.log(state.configured); // key -> boolean
+```
+
+The API returns the schema and configured-key flags, not stored values. Do not use status as a way to retrieve or copy credentials. Submitted values are checked by the service against the connector schema.
+
+## List all existing connections
+
+```typescript
+const summaries = await user.connectors();
+
+for (const summary of summaries) {
+  console.log(summary.slug, summary.status, summary.connectionId);
+}
+```
+
+This list contains existing connections only and derives the same four status values from each connection response.
+
+## Load actions or disconnect
+
+```typescript
+const capabilities = await github.capabilities();
+// Use or convert capabilities here.
+
+await github.disconnect();
+```
+
+`disconnect()` resolves the connection ID, deletes the connection, and clears the memo on that handle after success. A different handle has a separate memo. If a connection is changed outside a handle, a previously memoized ID can be stale.
+
+## Discover connectors from the catalog
+
+```typescript
+const page = await vinkius.catalog.list({ page: 1 });
+const detail = await vinkius.catalog.get('github');
+
+console.log(page.data);
+console.log(detail.credential_schema);
+```
+
+`catalog.search(query)` sends `q` to the same catalog endpoint. Filtering depends on service support; a service that ignores `q` can return the unfiltered list.
+
+## Next steps
+
+- [Bind connector setup to authenticated users](/guides/multi-tenant)
+- [Select and execute capabilities](/concepts/capabilities)
+- [Troubleshoot readiness and credential errors](/guides/troubleshooting)

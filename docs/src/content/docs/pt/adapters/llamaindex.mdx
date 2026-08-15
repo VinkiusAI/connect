@@ -1,0 +1,103 @@
+---
+title: Adaptador para LlamaIndex
+description: Crie ferramentas no estilo LlamaIndex por meio de uma fábrica injetada e de um callback que retorna string.
+---
+
+Use este adapter quando sua aplicação tiver uma fábrica `tool(fn, config)` compatível com o contrato estrutural abaixo. O adapter fornece uma função vinculada e um objeto de metadados para cada capacidade.
+
+## Converta e execute
+
+O exemplo define uma fábrica local, portanto não pressupõe uma API nem uma versão de pacote externo. Substitua-a pela fábrica do seu framework quando as assinaturas corresponderem.
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+import { toLlamaIndexTools, type LlamaIndexToolFactory } from '@vinkius/connect/llamaindex';
+
+type ExampleTool = {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  call: (input: Record<string, unknown>) => Promise<string>;
+};
+
+const tool: LlamaIndexToolFactory<ExampleTool> = (fn, config) => ({
+  ...config,
+  call: fn,
+});
+
+const vinkius = new Vinkius({
+  appId: 'vk_app_replace_me',
+  apiKey: 'vk_app_sk_replace_me',
+});
+const capabilities = await vinkius.user('user_123').capabilities();
+const tools = toLlamaIndexTools(capabilities, { tool });
+
+const firstTool = tools[0];
+if (firstTool) {
+  const text = await firstTool.call({});
+  console.log(text);
+}
+```
+
+O conversor retorna o `T[]` criado pela fábrica injetada e não importa nenhum código de runtime do LlamaIndex.
+
+## Contrato da fábrica
+
+Para cada capacidade, o adapter invoca:
+
+```typescript
+tool(async (input) => string, {
+  name: capability.name,
+  description: capability.description,
+  parameters: capability.inputSchema,
+});
+```
+
+`parameters` recebe JSON Schema bruto. Um objeto não vazio é preservado; um valor de runtime vazio, ausente, falsy ou que não seja objeto se torna `{ type: 'object', properties: {} }`. Nenhuma conversão ou validação por biblioteca de schemas é executada.
+
+A saída só é estruturalmente compatível com versões da fábrica que aceitem essa assinatura. O pacote Connect não instala nem fixa uma versão de framework externo.
+
+## Nomenclatura e execução
+
+Os metadados recebem o nome de exibição, cujo padrão é `${connector}__${rawName}`. O callback já está vinculado a uma capacidade e não executa consulta por nome. Nomes de exibição duplicados permanecem entradas duplicadas no array; o adapter não decide como um agente posterior os trata.
+
+A execução une as partes de texto do resultado em ordem:
+
+```typescript
+result.content.map((part) => part.text).join('\n');
+```
+
+Um array de conteúdo vazio produz uma string vazia. Exceções da execução continuam rejeitando a promise.
+
+## Perda no retorno e limitações
+
+O callback retorna `Promise<string>`. Ele não preserva `CapabilityResult.isError`, `content[].type` nem os limites tipificados entre as partes do conteúdo.
+
+Execute a `Capability` original quando esses campos forem importantes. O callback aceita apenas o registro de entrada, portanto não pode receber `ExecuteOptions` nem uma `idempotencyKey`.
+
+## API pública
+
+O subpath `@vinkius/connect/llamaindex` exporta:
+
+```typescript
+type LlamaIndexToolFactory<T> = (
+  fn: (input: Record<string, unknown>) => Promise<string>,
+  config: {
+    name: string;
+    description: string;
+    parameters: JSONSchema;
+  },
+) => T;
+
+interface ToLlamaIndexOptions<T> {
+  tool: LlamaIndexToolFactory<T>;
+}
+
+function toLlamaIndexTools<T>(capabilities: readonly Capability[], options: ToLlamaIndexOptions<T>): T[];
+```
+
+## Relacionado
+
+- Compare [todos os modos de retorno dos adapters](/pt/adapters/overview).
+- Leia as referências de [`CapabilitySet`](/pt/reference/client#capabilityset) e [`Capability`](/pt/reference/client#capability).
+- Trate a execução direta com [Tratamento de erros](/pt/guides/error-handling).

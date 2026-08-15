@@ -1,0 +1,105 @@
+---
+title: Google Gemini Adapter
+description: Convert capabilities to function declarations and dispatch returned function calls.
+---
+
+Use this adapter when your application sends Gemini-style function declarations and receives function calls. The converter returns declarations only; your application supplies the surrounding request and response protocol.
+
+## Convert and dispatch
+
+This example uses the exact structural call fields consumed by the adapter and does not call an external SDK.
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+import { runGeminiFunctionCall, toGeminiTools, type GeminiFunctionCall } from '@vinkius/connect/gemini';
+
+const vinkius = new Vinkius({
+  appId: 'vk_app_replace_me',
+  apiKey: 'vk_app_sk_replace_me',
+});
+const capabilities = await vinkius.user('user_123').capabilities();
+const declarations = toGeminiTools(capabilities);
+const tools = [{ functionDeclarations: declarations }];
+
+const firstDeclaration = declarations[0];
+if (firstDeclaration) {
+  const returnedCall: GeminiFunctionCall = {
+    name: firstDeclaration.name,
+    args: {},
+  };
+
+  const result = await runGeminiFunctionCall(capabilities, returnedCall);
+  console.log(result.content, result.isError);
+}
+```
+
+`tools` shows the wrapper commonly required around the declarations, but the adapter itself returns only `GeminiFunctionDeclaration[]`. Use the request shape documented by the external client version installed in your application.
+
+## Converted format
+
+Each declaration has this shape:
+
+```typescript
+{
+  name: capability.name,
+  description: capability.description,
+  parameters: capability.inputSchema,
+}
+```
+
+A missing, empty, falsy, or non-object schema observed at runtime becomes `{ type: 'object', properties: {} }`. The adapter does not validate or adapt schemas to provider-specific constraints.
+
+The package imports no Google client. Its declaration and call interfaces are local structural types, so compatibility must be checked against the client version your application uses.
+
+## Naming and dispatch
+
+`runGeminiFunctionCall` matches `call.name` only against `capability.name`. It does not use `rawName`. Display names default to `${connector}__${rawName}`.
+
+Lookup is first-match. Duplicate display names execute the first matching capability in array order. Missing `args` becomes `{}`; supplied arguments are passed through without validation.
+
+An unknown name throws a plain `Error("Unknown capability: …")`.
+
+## Results and limits
+
+Dispatch returns the complete `CapabilityResult`:
+
+```typescript
+{
+  content: Array<{ type: string; text: string }>;
+  isError: boolean;
+}
+```
+
+`isError: true` remains a returned result. Execution exceptions still reject the promise.
+
+The adapter does not create a function-response object or submit another model request. `runGeminiFunctionCall` also has no `ExecuteOptions` parameter and cannot forward `idempotencyKey`; execute the selected capability directly when you need per-execution options.
+
+## Public API
+
+The `@vinkius/connect/gemini` subpath exports:
+
+```typescript
+interface GeminiFunctionDeclaration {
+  name: string;
+  description: string;
+  parameters: JSONSchema;
+}
+
+interface GeminiFunctionCall {
+  name: string;
+  args?: Record<string, unknown>;
+}
+
+function toGeminiTools(capabilities: readonly Capability[]): GeminiFunctionDeclaration[];
+
+function runGeminiFunctionCall(
+  capabilities: readonly Capability[],
+  call: GeminiFunctionCall,
+): Promise<CapabilityResult>;
+```
+
+## Related
+
+- Compare [all adapter return modes](/adapters/overview).
+- Read the [`CapabilitySet`](/reference/client#capabilityset) and [`Capability`](/reference/client#capability) references.
+- Handle result failures and exceptions with [Error Handling](/guides/error-handling).

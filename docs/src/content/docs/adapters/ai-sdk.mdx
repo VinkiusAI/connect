@@ -1,0 +1,112 @@
+---
+title: Vercel AI SDK Adapter
+description: Convert capabilities to a keyed tool record with bound execution.
+---
+
+Use this adapter when your model runtime accepts a record of tools keyed by name. Each value contains a description, schema parameters, and an `execute` callback already bound to one capability.
+
+## Convert and execute
+
+This example exercises the adapter without calling an external AI SDK API.
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+import { toAISDKTools } from '@vinkius/connect/ai-sdk';
+
+const vinkius = new Vinkius({
+  appId: 'vk_app_replace_me',
+  apiKey: 'vk_app_sk_replace_me',
+});
+const capabilities = await vinkius.user('user_123').capabilities();
+const tools = toAISDKTools(capabilities);
+
+const firstName = Object.keys(tools)[0];
+const firstTool = firstName ? tools[firstName] : undefined;
+
+if (firstTool) {
+  const result = await firstTool.execute({});
+  console.log(result.content, result.isError);
+}
+```
+
+Pass `tools` to an operation in your installed runtime that accepts this record shape. No separate dispatch helper is needed.
+
+## Record format
+
+`toAISDKTools` returns `Record<string, AISDKTool>`. For each capability it assigns:
+
+```typescript
+tools[capability.name] = {
+  description: capability.description,
+  parameters: capability.inputSchema,
+  execute: (args) => capability.execute(args),
+};
+```
+
+The returned `Record` is the collection of tools, not the result of execution. Calling `execute` returns `CapabilityResult`.
+
+`parameters` is normalized first: a non-empty object is preserved, while an empty, missing, falsy, or non-object runtime value becomes `{ type: 'object', properties: {} }`.
+
+## Optional schema helper
+
+The adapter accepts an optional structural helper:
+
+```typescript
+const applicationSchemaWrapper = (schema: Record<string, unknown>): unknown => ({ schema });
+
+const tools = toAISDKTools(capabilities, {
+  jsonSchema: applicationSchemaWrapper,
+});
+```
+
+The normalized JSON Schema is passed to `jsonSchema`, and the helper's return value becomes `parameters`. Without the helper, `parameters` is the raw JSON Schema object.
+
+`applicationSchemaWrapper` above is local application code; the adapter does not provide it. When using a helper from an external package, check that its signature and expected tool shape match the installed version. `@vinkius/connect` does not import that package.
+
+## Names and duplicate keys
+
+Keys use `capability.name`, the display name that defaults to `${connector}__${rawName}`. Because the result is a JavaScript object, duplicate names cannot coexist: a later capability assignment overwrites the earlier tool at the same key.
+
+Execution is bound before return, so there is no runtime name lookup and no unknown-name dispatcher error.
+
+## Results and limits
+
+Each `execute(args)` preserves the complete `CapabilityResult`:
+
+```typescript
+{
+  content: Array<{ type: string; text: string }>;
+  isError: boolean;
+}
+```
+
+`isError: true` is returned unchanged; execution exceptions still reject the promise.
+
+The bound callback accepts only `args`. It cannot receive `ExecuteOptions` or forward an `idempotencyKey`. Execute the source capability directly when those controls are required.
+
+## Public API
+
+The `@vinkius/connect/ai-sdk` subpath exports:
+
+```typescript
+interface AISDKTool {
+  description: string;
+  parameters: unknown;
+  execute: (args: Record<string, unknown>) => Promise<CapabilityResult>;
+}
+
+interface ToAISDKOptions {
+  jsonSchema?: (schema: JSONSchema) => unknown;
+}
+
+function toAISDKTools(
+  capabilities: readonly Capability[],
+  options?: ToAISDKOptions,
+): Record<string, AISDKTool>;
+```
+
+## Related
+
+- Compare [all adapter output and return types](/adapters/overview).
+- Read the [`CapabilitySet`](/reference/client#capabilityset) and [`Capability`](/reference/client#capability) references.
+- Handle returned failures and exceptions with [Error Handling](/guides/error-handling).

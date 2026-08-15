@@ -1,0 +1,117 @@
+---
+title: Autentique la aplicación y vincule el alcance de usuario
+description: Mantenga las credenciales de la aplicación en el servidor, obtenga externalId de una identidad confiable y escriba las credenciales del conector sin volver a leer sus valores.
+---
+
+El SDK autentica su backend con un App ID y una Application Key. No autentica a los usuarios finales. Su aplicación debe verificar al llamador, autorizar la operación solicitada y obtener el `externalId` que se usa en cada solicitud con alcance de usuario.
+
+## Mantenga la clave de la aplicación detrás de un límite de servidor
+
+```typescript
+import { Vinkius } from '@vinkius/connect';
+
+export const vinkius = new Vinkius({
+  appId: process.env.VINKIUS_APP_ID!,
+  apiKey: process.env.VINKIUS_APP_KEY!,
+});
+```
+
+En términos conceptuales, las solicitudes envían la Application Key como autorización de portador y el App ID en un encabezado de aplicación. No inicialice este cliente en código para navegadores ni devuelva ninguno de los dos valores a un cliente.
+
+El SDK no expone una API de OAuth alojada ni una interfaz para configurar conectores. Si un conector requiere credenciales, su aplicación las recopila en su propio flujo autenticado del servidor y las envía con `credentials.set()`.
+
+## Obtenga `externalId` del estado autenticado
+
+```typescript
+interface Session {
+  userId: string;
+}
+
+async function listActions(session: Session) {
+  return vinkius.user(session.userId).capabilities();
+}
+```
+
+Use su propio identificador de usuario estable y, preferiblemente, opaco. El SDK rechaza valores que:
+
+- estén vacíos o tengan más de 255 caracteres;
+- contengan espacios en blanco, `/` o `\`;
+- comiencen por `vk_app_user_`, que indica un identificador interno y no el suyo.
+
+`user(externalId)` devuelve un identificador y no realiza ninguna solicitud. `ensure(metadata)` es opcional:
+
+```typescript
+await vinkius.user(session.userId).ensure({ plan: 'team' });
+```
+
+La API trata esta llamada como una creación o actualización idempotente. Use solo metadatos no secretos; no es un almacén de credenciales.
+
+## Rechace un alcance de usuario elegido por el cliente
+
+Este endpoint es vulnerable porque el cuerpo de la solicitud elige al usuario:
+
+```typescript
+// Do not use this pattern without an authorization check.
+const { externalId } = await request.json();
+const capabilities = await vinkius.user(externalId).capabilities();
+```
+
+Vincule el alcance antes de construir el identificador:
+
+```typescript
+async function handleCapabilities(request: Request) {
+  const session = await requireSession(request); // application code
+  const capabilities = await vinkius.user(session.userId).capabilities();
+
+  return Response.json(
+    capabilities.map(({ name, description, inputSchema }) => ({
+      name,
+      description,
+      inputSchema,
+    })),
+  );
+}
+```
+
+El límite de autorización es la consulta de su sesión. Un App ID y una clave autorizan a la aplicación, no a un usuario concreto del navegador.
+
+## Lea el esquema de credenciales antes de recopilar valores
+
+`credentials.schema()` lee los metadatos del conector en el catálogo. No requiere una conexión de usuario existente:
+
+```typescript
+const github = vinkius.user(session.userId).connector('github');
+const schema = await github.credentials.schema();
+```
+
+Use el esquema para decidir qué campos debe aceptar el formulario de su servidor. No suponga que todos los conectores usan tokens o los mismos nombres de claves.
+
+## Escriba las credenciales solo después de crear la conexión
+
+```typescript
+await github.connect();
+const state = await github.credentials.set({
+  GITHUB_TOKEN: submittedToken,
+});
+
+console.log(state.configured.GITHUB_TOKEN);
+```
+
+`credentials.status()` y `credentials.set()` requieren una conexión; de lo contrario, lanzan `ConnectorNotConnectedError`. Sus respuestas contienen el esquema y un mapa de claves configuradas, no los valores almacenados de las credenciales:
+
+```typescript
+const state = await github.credentials.status();
+// state.configured: Record<string, boolean>
+```
+
+Trate los valores enviados como secretos en su propio código. La censura de observabilidad del transporte cubre una lista fija de nombres de campos conocidos, pero no puede identificar todos los nombres personalizados que usted registre en otros lugares.
+
+## Separe los entornos de la aplicación
+
+Use App ID y claves diferentes para desarrollo, preproducción y tráfico en vivo. Esto separa los usuarios, el estado de las conexiones y la rotación de credenciales en el límite de autenticación de la aplicación.
+
+## Próximos pasos
+
+- [Implemente una ruta multiusuario](/es/guides/multi-tenant)
+- [Construya la configuración del conector a partir del esquema y del estado](/es/concepts/connectors)
+- [Gestione los errores de autenticación y validación](/es/guides/error-handling)

@@ -1,0 +1,190 @@
+---
+title: Resolva problemas por sintoma
+description: Identifique falhas de configuração, autenticação, conexão, capacidade, despacho, validação, timeout e cota pelo comportamento observável.
+---
+
+Comece pelo valor recebido: um erro lançado, um conjunto vazio de capacidades, o status de um conector ou um `CapabilityResult` resolvido. Esses sinais correspondem a camadas diferentes e exigem correções diferentes.
+
+## O construtor lança antes de qualquer requisição
+
+### Erro de prefixo de `appId` ou `apiKey`
+
+Use o ID público e a chave secreta nos campos corretos:
+
+```typescript
+const vinkius = new Vinkius({
+  appId: 'vk_app_...',
+  apiKey: 'vk_app_sk_...',
+});
+```
+
+O App ID público deve começar com `vk_app_`, mas não com `vk_app_sk_`. A chave deve começar com `vk_app_sk_`.
+
+### `No global fetch found`
+
+Use Node.js 18 ou posterior, um runtime com `fetch` global, ou passe uma implementação compatível pela opção `fetch` do construtor.
+
+### `Invalid externalId`
+
+Use o ID de usuário da sua aplicação, não um identificador `vk_app_user_...`. Ele deve ter de 1 a 255 caracteres e não pode conter espaços em branco, `/` ou `\`.
+
+## As requisições lançam `AuthError`
+
+Um HTTP `401` ou `403` é mapeado para `AuthError`.
+
+1. Confirme que as variáveis de ambiente foram carregadas no processo do servidor.
+2. Confirme que a Application Key pertence ao App ID e ao ambiente configurados.
+3. Substitua uma chave revogada ou rotacionada.
+4. Verifique se o código de implantação não trocou o App ID pela chave.
+5. Registre `requestId` quando presente, mas nunca registre a chave.
+
+## O status do conector é `not_connected`
+
+Um handle não cria uma conexão:
+
+```typescript
+const connector = vinkius.user(externalId).connector('github');
+console.log(await connector.status()); // pode ser 'not_connected'
+
+await connector.connect();
+```
+
+`connect()` executa a requisição get-or-create. `credentials.status()`, `credentials.set()`, `disconnect()` e `capabilities()` com escopo de conector lançam `ConnectorNotConnectedError` até que uma conexão exista.
+
+## O status do conector é `needs_credentials`
+
+Leia o schema do catálogo, colete os valores obrigatórios no fluxo do servidor e grave-os:
+
+```typescript
+const schema = await connector.credentials.schema();
+const state = await connector.credentials.set(values);
+
+console.log(schema, state.configured);
+```
+
+`schema()` pode executar antes da conexão; `set()` não. Compare os nomes das chaves enviadas com o schema e examine `ValidationError.errors` se o serviço as rejeitar. Os valores armazenados não são retornados.
+
+## O status do conector é `disabled`
+
+A conexão existe, mas seu status na API não é ativo. Regravar credenciais talvez não altere essa condição. Mostre ao usuário que a conexão não pode executar, examine a resposta da conexão pelo cliente de baixo nível se necessário ou substitua a conexão de acordo com o fluxo da sua aplicação.
+
+## `user.capabilities()` retorna um conjunto vazio
+
+Um conjunto vazio é válido. Examine o escopo e os filtros:
+
+```typescript
+const user = vinkius.user(externalId);
+const connectors = await user.connectors();
+const capabilities = await user.capabilities({ include: ['github'] });
+
+console.log({ connectors, count: capabilities.length });
+```
+
+Verifique estes itens em ordem:
+
+1. `externalId` veio da sessão autenticada esperada.
+2. O slug esperado aparece em `connectors()`.
+3. Seu status derivado é `ready`.
+4. `include` usa exatamente o slug esperado pelo serviço.
+5. `exclude` não removeu o conector localmente.
+6. O endpoint agregado realmente retornou ações para a conexão.
+
+O cliente converte a resposta do endpoint; ele não acrescenta um filtro local de prontidão.
+
+## A consulta da capacidade retorna `undefined`
+
+Examine os dois nomes:
+
+```typescript
+for (const capability of capabilities) {
+  console.log(capability.name, capability.rawName, capability.connector);
+}
+```
+
+O nome de exibição padrão usa namespace, como `github__create_issue`. `findCapability()` aceita o nome de exibição ou bruto e retorna a primeira correspondência. Quando nomes brutos colidirem, chame primeiro `forConnector(slug)` ou use o nome de exibição com namespace.
+
+Se você forneceu `namespaceCapability`, verifique se sua saída atende às restrições de nomenclatura do provedor e permanece exclusiva; os adapters não impõem nenhuma dessas regras.
+
+## Um dispatcher de adapter lança `Unknown capability`
+
+Passe o mesmo array de capacidades para conversão e despacho e preserve exatamente o nome de exibição retornado:
+
+```typescript
+const tools = toOpenAITools(capabilities);
+// Envie as ferramentas ao modelo e então:
+const result = await runOpenAIToolCall(capabilities, returnedCall);
+```
+
+Os dispatchers de OpenAI, Anthropic e Gemini correspondem apenas aos nomes de exibição. O despacho de JSON Schema aceita nomes de exibição ou brutos, com ambiguidade de primeira correspondência para nomes brutos duplicados. Nomes de despacho desconhecidos lançam `Error` simples, não `VinkiusError`.
+
+## Argumentos da OpenAI tornam-se `{}` inesperadamente
+
+`runOpenAIToolCall` interpreta `call.function.arguments`. Strings vazias, JSON malformado, `null` em JSON e valores JSON primitivos são todos convertidos em `{}`. Valide ou registre o formato interpretado no seu próprio loop de modelo se argumentos malformados precisarem ser rejeitados em vez de tolerados.
+
+## A execução resolve com `isError: true`
+
+A requisição HTTP foi concluída e a capacidade informou uma ação com falha. Examine o conteúdo retornado:
+
+```typescript
+const result = await capability.execute(args, options);
+
+if (result.isError) {
+  console.error(result.content.map((part) => part.text).join('\n'));
+}
+```
+
+Não espere essa ramificação em `catch`. Um loop de provedor pode retornar o resultado ao modelo, enquanto uma rota determinística pode mapeá-lo para uma resposta de erro da aplicação.
+
+Adapters de fábrica que retornam strings descartam `isError`; portanto, execute a capacidade original diretamente quando essa distinção for importante.
+
+## A execução atingiu o timeout ou lançou `ConnectionError`
+
+Leituras e outras operações repetíveis podem ser repetidas automaticamente. A execução de capacidade só é repetida quando `idempotencyKey` não é `undefined`.
+
+```typescript
+if (!operationId) throw new Error('operationId is required');
+
+await capability.execute(args, {
+  idempotencyKey: `create-issue:${operationId}`,
+});
+```
+
+Não passe uma chave vazia: a implementação atual pode classificá-la como repetível sem enviar o cabeçalho. Depois de um timeout sem uma chave válida, a ação externa pode ter sido concluída; reconcilie-a antes de enviar uma nova operação.
+
+Os helpers de despacho dos adapters não podem passar chave de idempotência ou sinal. Use execução direta para efeitos colaterais que precisem desses controles.
+
+## Um erro de limite ou plano persiste
+
+- `RateLimitError` pode fornecer `retryAfterMs` depois que as repetições automáticas terminam.
+- `QuotaError` e `OverageError` podem fornecer `upgradeUrl`; repetir sem alterações não modifica um limite do plano.
+- O transporte trata `429` como transitório antes de mapear seu corpo, portanto requisições repetíveis podem consumir repetições antes de um erro final de cota.
+
+## Os hooks não mostram uma falha de rede
+
+`onResponse` só executa depois de uma resposta HTTP. Um timeout ou erro de rede sem resposta não o invoca. `onRequest` executa antes de cada tentativa, então um log de requisição sem log de resposta pode indicar falha de transporte.
+
+Exceções dos hooks propagam seus valores originais. Mantenha os hooks sem lançamentos. O SDK remove uma lista fixa de nomes de campos exatos, não toda chave personalizada com formato de segredo.
+
+## Colete diagnósticos para o suporte
+
+```typescript
+import { VinkiusError } from '@vinkius/connect';
+
+if (error instanceof VinkiusError) {
+  console.error({
+    code: error.code,
+    status: error.status,
+    requestId: error.requestId,
+    connector: connector.slug,
+    occurredAt: new Date().toISOString(),
+  });
+}
+```
+
+Uma falha local ou de transporte pode não ter `requestId`. Não inclua chaves da aplicação, valores de credenciais, cabeçalhos de autorização ou `error.details` sem revisão.
+
+## Próximos passos
+
+- [Implemente o modelo completo de falhas](/pt/guides/error-handling)
+- [Revise as transições de estado do conector](/pt/concepts/connectors)
+- [Verifique a interpretação e o comportamento de resultados específicos de cada adapter](/pt/adapters/overview)
