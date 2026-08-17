@@ -1,15 +1,53 @@
 /**
- * Catalog discovery (low-level, 1:1 with the API).
+ * Catalog discovery.
  *
- *   GET /catalog/mcps          → paginated CatalogConnector
- *   GET /catalog/mcps/{slug}   → CatalogConnectorDetail (+ credential_schema)
+ *   GET /catalog/mcps                    → paginated CatalogConnector
+ *   GET /catalog/mcps/{slug}             → CatalogConnectorDetail (+ credential_schema)
+ *   GET /marketplace/search?q=...&page=1 → marketplace-ranked search results
  *
- * The transport path is `/catalog/mcps` (MCP is the platform's internal data
- * plane); the SDK exposes these as connectors.
+ * Catalog listing/detail use the internal MCP data-plane routes. Search uses
+ * the public marketplace endpoint so SDK consumers receive the same ranking
+ * and results as the Vinkius website.
  */
 import type { HttpClient } from '../core/http';
 import { normalizePaginated, unwrapItem } from '../core/pagination';
 import type { CatalogConnector, CatalogConnectorDetail, Paginated, RequestOptions } from '../types';
+
+interface MarketplaceSearchConnector {
+  id: string;
+  slug: string;
+  title: string;
+  short_description: string | null;
+  publisher_type: string;
+  listing_type?: string;
+  server_type?: string;
+  tools_count?: number;
+  requires_buyer_auth?: boolean;
+  requires_auth?: boolean;
+}
+
+interface MarketplaceSearchResponse {
+  results?: MarketplaceSearchConnector[];
+  has_more?: boolean;
+  page?: number;
+}
+
+function normalizeMarketplaceSearch(body: unknown): CatalogConnector[] {
+  const response = body as MarketplaceSearchResponse;
+  if (!Array.isArray(response?.results)) return [];
+
+  return response.results.map((connector) => ({
+    id: connector.id,
+    slug: connector.slug,
+    title: connector.title,
+    short_description: connector.short_description,
+    publisher_type: connector.publisher_type,
+    listing_type: connector.listing_type ?? connector.server_type ?? '',
+    requires_buyer_auth: connector.requires_buyer_auth ?? connector.requires_auth ?? false,
+    server_type: connector.server_type,
+    tools_count: connector.tools_count,
+  }));
+}
 
 export class CatalogClient {
   constructor(private readonly http: HttpClient) {}
@@ -31,18 +69,12 @@ export class CatalogClient {
     return unwrapItem<CatalogConnectorDetail>(body);
   }
 
-  /**
-   * Server-side search over the catalog.
-   *
-   * NOTE: requires backend support for the `?q=` parameter (pending). Until
-   * enabled, this will return the same results as `list()`. Check the Vinkius
-   * Cloud release notes or test the response before relying on filtered results.
-   */
-  async search(query: string, opts: RequestOptions = {}): Promise<CatalogConnector[]> {
-    const body = await this.http.get<unknown>('/catalog/mcps', {
-      query: { q: query },
+  /** Search using the same endpoint and ranking as the Vinkius marketplace. */
+  async search(query: string, opts: { page?: number } & RequestOptions = {}): Promise<CatalogConnector[]> {
+    const body = await this.http.get<unknown>('/marketplace/search', {
+      query: { q: query, page: opts.page ?? 1 },
       signal: opts.signal,
     });
-    return normalizePaginated<CatalogConnector>(body).data;
+    return normalizeMarketplaceSearch(body);
   }
 }

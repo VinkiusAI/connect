@@ -31,14 +31,46 @@ describe('CatalogClient', () => {
     expect(detail.slug).toBe('github');
   });
 
-  it('sends the ?q= query on search', async () => {
+  it('uses the marketplace search endpoint and normalizes its results', async () => {
     const route: Route = {
       method: 'GET',
-      path: /^\/catalog\/mcps$/,
-      respond: () => ({ body: { data: [] } }),
+      path: /^\/marketplace\/search$/,
+      respond: () => ({
+        body: {
+          results: [
+            {
+              id: 'coindesk-bitcoin-price-index',
+              slug: 'coindesk-bitcoin-price-index',
+              title: 'CoinDesk Bitcoin Price Index',
+              short_description: 'Get real-time Bitcoin prices.',
+              publisher_type: 'verified',
+              server_type: 'managed',
+              tools_count: 8,
+              requires_auth: false,
+            },
+          ],
+          has_more: true,
+          page: 1,
+        },
+      }),
     };
     const { vinkius, calls } = makeVinkius([route]);
-    await vinkius.catalog.search('project management');
-    expect(calls[0]?.query.get('q')).toBe('project management');
+    const results = await vinkius.catalog.search('cryptocurrency price');
+
+    expect(calls[0]?.query.get('q')).toBe('cryptocurrency price');
+    expect(calls[0]?.query.get('page')).toBe('1');
+    expect(results).toEqual([
+      {
+        id: 'coindesk-bitcoin-price-index',
+        slug: 'coindesk-bitcoin-price-index',
+        title: 'CoinDesk Bitcoin Price Index',
+        short_description: 'Get real-time Bitcoin prices.',
+        publisher_type: 'verified',
+        listing_type: 'managed',
+        requires_buyer_auth: false,
+        server_type: 'managed',
+        tools_count: 8,
+      },
+    ]);
   });
 });
