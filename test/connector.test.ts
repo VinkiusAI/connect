@@ -40,6 +40,58 @@ describe('Connector (external_id addressing)', () => {
     expect(await missing.vinkius.user('customer-123').connector('slack').status()).toBe('not_connected');
   });
 
+  it('clears a memoized connection id when status no longer finds the connection', async () => {
+    const { vinkius } = makeVinkius([
+      {
+        method: 'POST',
+        path: /^\/apps\/vk_app_test\/users\/customer-123\/mcps$/,
+        respond: () => ({ body: { data: connection('conn_1', 'github') } }),
+      },
+      listRoute([]),
+      listRoute([]),
+    ]);
+    const github = vinkius.user('customer-123').connector('github');
+    await github.connect();
+    expect(await github.status()).toBe('not_connected');
+    await expect(github.capabilities()).rejects.toBeInstanceOf(ConnectorNotConnectedError);
+  });
+
+  it('lists scoped capabilities with the resolved connection id', async () => {
+    const { vinkius, calls } = makeVinkius([
+      listRoute([connection('conn_1', 'github')]),
+      {
+        method: 'GET',
+        path: /^\/apps\/vk_app_test\/users\/customer-123\/mcps\/conn_1\/tools$/,
+        respond: () => ({
+          body: {
+            data: [
+              {
+                name: 'create_issue',
+                title: 'Create Issue',
+                description: 'Create a GitHub issue',
+                input_schema: { type: 'object', properties: { title: { type: 'string' } } },
+              },
+            ],
+          },
+        }),
+      },
+    ]);
+
+    const capabilities = await vinkius.user('customer-123').connector('github').capabilities();
+
+    expect(capabilities).toHaveLength(1);
+    expect(capabilities[0]).toMatchObject({
+      connector: 'github',
+      connectionId: 'conn_1',
+      rawName: 'create_issue',
+      name: 'github__create_issue',
+    });
+    expect(calls.map((call) => call.path)).toEqual([
+      '/apps/vk_app_test/users/customer-123/mcps',
+      '/apps/vk_app_test/users/customer-123/mcps/conn_1/tools',
+    ]);
+  });
+
   it('throws ConnectorNotConnectedError when listing capabilities of an unconnected connector', async () => {
     const { vinkius } = makeVinkius([listRoute([])]);
     await expect(vinkius.user('customer-123').connector('github').capabilities()).rejects.toBeInstanceOf(

@@ -44,6 +44,7 @@ export {
   ConnectorNotConnectedError,
   NotImplementedError,
   ConnectionError,
+  ProtocolError,
 } from './core/errors';
 export type { VinkiusErrorCode } from './core/errors';
 

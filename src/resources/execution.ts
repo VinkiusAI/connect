@@ -9,6 +9,7 @@
  * are returned as `{ isError: true }` results (HTTP 200), while quota/overage
  * surface as {@link QuotaError}/{@link OverageError}.
  */
+import { ConfigError, ProtocolError } from '../core/errors';
 import type { HttpClient } from '../core/http';
 import { unwrapList } from '../core/pagination';
 import { assertExternalId } from '../core/validate';
@@ -18,6 +19,30 @@ export interface ExecuteCapabilityInput {
   /** Raw capability name (as the connector exposes it). */
   name: string;
   arguments?: Record<string, unknown>;
+}
+
+function assertCapabilityResult(body: unknown): CapabilityResult {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new ProtocolError('Capability execution returned an invalid response.', { details: body });
+  }
+  const result = body as Partial<CapabilityResult>;
+  const contentIsValid =
+    Array.isArray(result.content) &&
+    result.content.every(
+      (entry) => entry && typeof entry.type === 'string' && typeof entry.text === 'string',
+    );
+  if (typeof result.isError !== 'boolean' || !contentIsValid) {
+    throw new ProtocolError('Capability execution returned an invalid response.', { details: body });
+  }
+  return result as CapabilityResult;
+}
+
+function idempotencyKey(options: ExecuteOptions): string | undefined {
+  const key = options.idempotencyKey;
+  if (key !== undefined && key.trim().length === 0) {
+    throw new ConfigError('idempotencyKey must be a non-empty string when provided.');
+  }
+  return key;
 }
 
 export class ExecutionClient {
@@ -45,16 +70,18 @@ export class ExecutionClient {
   }
 
   /** Execute a capability by its raw name. */
-  execute(input: ExecuteCapabilityInput, opts: ExecuteOptions = {}): Promise<CapabilityResult> {
-    return this.http.post<CapabilityResult>(
+  async execute(input: ExecuteCapabilityInput, opts: ExecuteOptions = {}): Promise<CapabilityResult> {
+    const key = idempotencyKey(opts);
+    const body = await this.http.post<unknown>(
       `${this.base()}/execute`,
       { tool_name: input.name, ...(input.arguments !== undefined ? { arguments: input.arguments } : {}) },
       {
         signal: opts.signal,
-        idempotencyKey: opts.idempotencyKey,
-        // Retry only when the caller supplied an idempotency key.
-        idempotent: opts.idempotencyKey !== undefined,
+        idempotencyKey: key,
+        // Retry only when the caller supplied a valid idempotency key.
+        idempotent: key !== undefined,
       },
     );
+    return assertCapabilityResult(body);
   }
 }

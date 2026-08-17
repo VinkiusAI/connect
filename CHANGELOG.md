@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] — 2026-08-17
+
+### Fixed
+
+- Invalid 2xx list responses now raise `ProtocolError` instead of being silently
+  normalized to an empty capability or resource list.
+- Capability payloads and execution results are validated before entering the
+  Fluent API, preventing missing routing metadata from failing later in a call.
+- Empty idempotency keys are rejected and no longer make execution retries
+  appear safe without sending an `Idempotency-Key` header.
+- Connector handles clear stale memoized connection IDs when a status refresh no
+  longer finds the connection.
+
+### Tests
+
+- Added coverage proving `connector(slug).capabilities()` resolves the slug and
+  lists tools through the connection-scoped Execution Plane path.
+
 ## [0.1.2] — 2026-08-17
 
 ### Fixed
@@ -55,5 +73,6 @@ First public release of `@vinkius/connect`.
   operations (users, connectors, credentials, catalog) work against the current
   API.
 
+[0.1.3]: https://github.com/VinkiusAI/connect/releases/tag/v0.1.3
 [0.1.2]: https://github.com/VinkiusAI/connect/releases/tag/v0.1.2
 [0.1.0]: https://github.com/VinkiusAI/connect/releases/tag/v0.1.0

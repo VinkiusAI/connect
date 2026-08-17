@@ -22,9 +22,9 @@ describe('normalizePaginated', () => {
     expect(result.links).toBeUndefined();
   });
 
-  it('handles null/undefined input gracefully', () => {
-    expect(normalizePaginated(null).data).toEqual([]);
-    expect(normalizePaginated(undefined).data).toEqual([]);
+  it('rejects a malformed paginated response', () => {
+    expect(() => normalizePaginated(null)).toThrow('Expected a list response');
+    expect(() => normalizePaginated(undefined)).toThrow('Expected a list response');
   });
 });
 
@@ -37,9 +37,9 @@ describe('unwrapList', () => {
     expect(unwrapList([4, 5])).toEqual([4, 5]);
   });
 
-  it('returns empty array for null/undefined', () => {
-    expect(unwrapList(null)).toEqual([]);
-    expect(unwrapList(undefined)).toEqual([]);
+  it('rejects null or undefined instead of treating a malformed response as empty', () => {
+    expect(() => unwrapList(null)).toThrow('Expected a list response');
+    expect(() => unwrapList(undefined)).toThrow('Expected a list response');
   });
 });
 

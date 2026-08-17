@@ -59,7 +59,12 @@ export class Connector {
     const executor = makeExecutor(this.ctx.http, this.ctx.appId, this.user.externalId);
     return CapabilitySet.fromCapabilities(
       raw.map((data) =>
-        buildCapability(data, { connector: this.slug, connectionId, namespace: this.ctx.namespace, executor }),
+        buildCapability(data, {
+          connector: this.slug,
+          connectionId,
+          namespace: this.ctx.namespace,
+          executor,
+        }),
       ),
     );
   }
@@ -79,7 +84,7 @@ export class Connector {
   private async findConnection(opts: RequestOptions): Promise<Connection | undefined> {
     const connections = await this.connections().list(opts);
     const match = connections.find((c) => c.slug === this.slug || c.id === this.slug);
-    if (match) this.connectionId = match.id;
+    this.connectionId = match?.id;
     return match;
   }
 }

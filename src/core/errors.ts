@@ -19,6 +19,7 @@ export type VinkiusErrorCode =
   | 'connector_not_connected'
   | 'not_implemented'
   | 'connection_error'
+  | 'protocol_error'
   | 'api_error';
 
 export interface VinkiusErrorInit {
@@ -134,6 +135,13 @@ export class NotImplementedError extends VinkiusError {
 export class ConnectionError extends VinkiusError {
   constructor(message: string, init: SubInit = {}) {
     super(message, { ...init, code: 'connection_error' });
+  }
+}
+
+/** A successful HTTP response violated the documented API wire contract. */
+export class ProtocolError extends VinkiusError {
+  constructor(message: string, init: SubInit = {}) {
+    super(message, { ...init, code: 'protocol_error' });
   }
 }
 

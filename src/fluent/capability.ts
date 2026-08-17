@@ -5,6 +5,7 @@
  * is an Array subclass with ergonomic helpers (kept minimal to avoid surprising
  * Array-method overrides — hence `findCapability`, not `find`).
  */
+import { ProtocolError } from '../core/errors';
 import type { CapabilityData, CapabilityResult, ExecuteOptions, JSONSchema } from '../types';
 
 /** Executes a capability by routing to the connection-scoped Execution Plane endpoint. */
@@ -66,7 +67,15 @@ export interface BuildCapabilityContext {
 
 /** Build a {@link Capability} from a raw {@link CapabilityData} payload. */
 export function buildCapability(data: CapabilityData, ctx: BuildCapabilityContext): Capability {
-  const rawName = data.name;
+  const rawName = data?.name;
+  if (typeof rawName !== 'string' || rawName.trim().length === 0) {
+    throw new ProtocolError('Capability payload is missing a non-empty name.', { details: data });
+  }
+  if (!ctx.connector || !ctx.connectionId) {
+    throw new ProtocolError('Capability payload is missing connector routing metadata.', {
+      details: { connector: ctx.connector, connectionId: ctx.connectionId },
+    });
+  }
   return new Capability(ctx.executor, {
     connector: ctx.connector,
     connectionId: ctx.connectionId,
