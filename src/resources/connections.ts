@@ -12,7 +12,7 @@ import { unwrapItem, unwrapList } from '../core/pagination';
 import { assertExternalId } from '../core/validate';
 import type { Connection, RequestOptions } from '../types';
 import { CredentialsClient } from './credentials';
-import { ExecutionClient } from './execution';
+import { ConnectionTokensClient } from './tokens';
 
 export interface CreateConnectionInput {
   /** Connector slug (or catalog id) to connect. */
@@ -65,7 +65,8 @@ export class ConnectionsClient {
     return new CredentialsClient(this.http, this.appId, this.externalId, connectionId);
   }
 
-  execution(connectionId: string): ExecutionClient {
-    return new ExecutionClient(this.http, this.appId, this.externalId, connectionId);
+  /** Data-plane token management for this connection (mints the vk_live_* + mcp_url). */
+  tokens(connectionId: string): ConnectionTokensClient {
+    return new ConnectionTokensClient(this.http, this.appId, this.externalId, connectionId);
   }
 }

@@ -93,6 +93,31 @@ export interface Connection {
   ready: boolean;
   tokens_count?: number;
   created_at: ISODate;
+  /**
+   * Fully-qualified runtime endpoint for this connection ({RUNTIME}/{token}/mcp).
+   * Populated by connect() after a `vk_live_*` token is provisioned; the runtime
+   * is the ONLY surface for tool listing/execution and every call to it is
+   * metered and revocable (kill switch). Treat as a secret — the embedded token
+   * authenticates the request. Present only when a token was minted this call.
+   */
+  runtime_url?: string | null;
+}
+
+/**
+ * A provisioned data-plane access token for a connection. The plaintext token
+ * and its runtime URL are returned ONLY at creation/rotation — never re-fetched.
+ * Every tool call through {@link IssuedConnectionToken.mcp_url} is metered
+ * against this token, which the user can disable or delete (kill switch).
+ */
+export interface IssuedConnectionToken {
+  id: string;
+  name: string;
+  is_enabled: boolean;
+  /** Plaintext `vk_live_*` — present only on the create/rotate response. */
+  token?: string;
+  /** Runtime endpoint embedding the token — present only on create/rotate. */
+  mcp_url?: string;
+  created_at: ISODate;
 }
 
 /** A connector available in the catalog. `id` equals `slug`. */

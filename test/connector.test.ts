@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { ConnectorNotConnectedError } from '../src';
-import { connection, makeVinkius, type Route } from './helpers/mock-fetch';
+import {
+  connection,
+  makeVinkius,
+  runtimeRoute,
+  RUNTIME_MCP_URL,
+  tokenRoute,
+  type Route,
+} from './helpers/mock-fetch';
 
 function listRoute(connections: Array<Record<string, unknown>>): Route {
   return {
@@ -10,20 +17,28 @@ function listRoute(connections: Array<Record<string, unknown>>): Route {
   };
 }
 
+function createRoute(): Route {
+  return {
+    method: 'POST',
+    path: /^\/apps\/vk_app_test\/users\/customer-123\/mcps$/,
+    respond: () => ({ body: { data: connection('conn_1', 'github') } }),
+  };
+}
+
 describe('Connector (external_id addressing)', () => {
-  it('connect() addresses by external_id and memoizes the connection id', async () => {
-    const { vinkius, calls } = makeVinkius([
-      {
-        method: 'POST',
-        path: /^\/apps\/vk_app_test\/users\/customer-123\/mcps$/,
-        respond: () => ({ body: { data: connection('conn_1', 'github') } }),
-      },
-    ]);
+  it('connect() provisions a runtime token and returns the runtime_url', async () => {
+    const { vinkius, calls } = makeVinkius([createRoute(), tokenRoute()]);
     const github = vinkius.user('customer-123').connector('github');
     const result = await github.connect();
     expect(result.id).toBe('conn_1');
     expect(result.slug).toBe('github');
-    expect(calls).toHaveLength(1);
+    // The connection now carries its runtime endpoint (embeds the vk_live_* token).
+    expect(result.runtime_url).toBe(RUNTIME_MCP_URL);
+    // Two calls: create the connection, then mint its data-plane token.
+    expect(calls.map((c) => c.path)).toEqual([
+      '/apps/vk_app_test/users/customer-123/mcps',
+      '/apps/vk_app_test/users/customer-123/mcps/conn_1/tokens',
+    ]);
   });
 
   it('derives status from connection.ready', async () => {
@@ -41,40 +56,18 @@ describe('Connector (external_id addressing)', () => {
   });
 
   it('clears a memoized connection id when status no longer finds the connection', async () => {
-    const { vinkius } = makeVinkius([
-      {
-        method: 'POST',
-        path: /^\/apps\/vk_app_test\/users\/customer-123\/mcps$/,
-        respond: () => ({ body: { data: connection('conn_1', 'github') } }),
-      },
-      listRoute([]),
-      listRoute([]),
-    ]);
+    const { vinkius } = makeVinkius([createRoute(), tokenRoute(), listRoute([]), listRoute([])]);
     const github = vinkius.user('customer-123').connector('github');
     await github.connect();
     expect(await github.status()).toBe('not_connected');
     await expect(github.capabilities()).rejects.toBeInstanceOf(ConnectorNotConnectedError);
   });
 
-  it('lists scoped capabilities with the resolved connection id', async () => {
+  it('lists capabilities from the runtime after resolving the connection', async () => {
     const { vinkius, calls } = makeVinkius([
       listRoute([connection('conn_1', 'github')]),
-      {
-        method: 'GET',
-        path: /^\/apps\/vk_app_test\/users\/customer-123\/mcps\/conn_1\/tools$/,
-        respond: () => ({
-          body: {
-            data: [
-              {
-                name: 'create_issue',
-                title: 'Create Issue',
-                description: 'Create a GitHub issue',
-                input_schema: { type: 'object', properties: { title: { type: 'string' } } },
-              },
-            ],
-          },
-        }),
-      },
+      tokenRoute(),
+      runtimeRoute(),
     ]);
 
     const capabilities = await vinkius.user('customer-123').connector('github').capabilities();
@@ -86,9 +79,11 @@ describe('Connector (external_id addressing)', () => {
       rawName: 'create_issue',
       name: 'github__create_issue',
     });
+    // Resolve the connection (API), mint the token (API), then list tools (runtime).
     expect(calls.map((call) => call.path)).toEqual([
       '/apps/vk_app_test/users/customer-123/mcps',
-      '/apps/vk_app_test/users/customer-123/mcps/conn_1/tools',
+      '/apps/vk_app_test/users/customer-123/mcps/conn_1/tokens',
+      '/vk_live_test/mcp',
     ]);
   });
 

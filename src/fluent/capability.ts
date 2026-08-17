@@ -8,9 +8,13 @@
 import { ProtocolError } from '../core/errors';
 import type { CapabilityData, CapabilityResult, ExecuteOptions, JSONSchema } from '../types';
 
-/** Executes a capability by routing to the connection-scoped Execution Plane endpoint. */
+/**
+ * Executes a capability at the MCP runtime — the sole execution surface. The
+ * runtime target (a connection's `mcp_url`, which embeds its `vk_live_*` token)
+ * is bound into the executor when the capability is built, so this signature
+ * carries no routing coordinates.
+ */
 export type CapabilityExecutor = (
-  connectionId: string,
   rawName: string,
   args: Record<string, unknown> | undefined,
   opts: ExecuteOptions | undefined,
@@ -52,9 +56,9 @@ export class Capability {
     this.inputSchema = init.inputSchema;
   }
 
-  /** Execute this capability. `isError: true` results are returned, not thrown. */
+  /** Execute this capability at the runtime. `isError: true` results are returned, not thrown. */
   execute(args?: Record<string, unknown>, opts?: ExecuteOptions): Promise<CapabilityResult> {
-    return this.executor(this.connectionId, this.rawName, args, opts);
+    return this.executor(this.rawName, args, opts);
   }
 }
 

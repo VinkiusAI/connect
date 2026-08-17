@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { appUser, connection, makeVinkius, type Route } from './helpers/mock-fetch';
+import { appUser, connection, makeVinkius, tokenRoute } from './helpers/mock-fetch';
 
 describe('UserContext (external_id addressing)', () => {
   it('makes no request when creating a user handle', () => {
@@ -20,19 +20,24 @@ describe('UserContext (external_id addressing)', () => {
     expect(calls[0]?.body).toEqual({ external_id: 'usr_42', metadata: { plan: 'pro' } });
   });
 
-  it('connects a connector by external_id with NO resolution request', async () => {
+  it('connects a connector by external_id, then provisions its runtime token', async () => {
     const { vinkius, calls } = makeVinkius([
       {
         method: 'POST',
         path: /^\/apps\/vk_app_test\/users\/customer-123\/mcps$/,
-        respond: (c) => ({ body: { data: connection('conn_1', 'github') } }),
+        respond: () => ({ body: { data: connection('conn_1', 'github') } }),
       },
+      tokenRoute(),
     ]);
     const result = await vinkius.user('customer-123').connector('github').connect();
     expect(result.id).toBe('conn_1');
-    // Exactly one request — the external_id goes straight into the path.
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.path).toBe('/apps/vk_app_test/users/customer-123/mcps');
+    expect(result.runtime_url).toBeTruthy();
+    // Two requests: create the connection (external_id goes straight into the
+    // path), then mint the connection's data-plane token.
+    expect(calls.map((c) => c.path)).toEqual([
+      '/apps/vk_app_test/users/customer-123/mcps',
+      '/apps/vk_app_test/users/customer-123/mcps/conn_1/tokens',
+    ]);
     // The wire body maps the connector slug to the API field.
     expect(calls[0]?.body).toEqual({ catalog_mcp_id: 'github' });
   });

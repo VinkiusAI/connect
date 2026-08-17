@@ -3,15 +3,17 @@
  *
  *   GET/POST         /apps/{app}/users
  *   GET/PATCH/DELETE /apps/{app}/users/{externalId}
- *   GET              /apps/{app}/users/{externalId}/tools   (Execution Plane, aggregated)
  *
  * Users are addressed by their client-supplied `external_id`. `create` is
  * idempotent: the API upserts by `(application_id, external_id)`.
+ *
+ * Tool listing/execution is NOT here — that is the runtime's job, reached per
+ * connection via {@link ConnectionsClient.tokens} (see fluent Connector).
  */
 import type { HttpClient } from '../core/http';
-import { normalizePaginated, unwrapItem, unwrapList } from '../core/pagination';
+import { normalizePaginated, unwrapItem } from '../core/pagination';
 import { assertExternalId } from '../core/validate';
-import type { AppUser, CapabilityData, Paginated, RequestOptions } from '../types';
+import type { AppUser, Paginated, RequestOptions } from '../types';
 import { ConnectionsClient } from './connections';
 
 export interface CreateAppUserInput {
@@ -71,20 +73,6 @@ export class AppUsersClient {
       signal: opts.signal,
     });
     return normalizePaginated<AppUser>(body);
-  }
-
-  /** Aggregated capabilities for the user across connectors (raw shapes). */
-  async capabilities(
-    externalId: string,
-    opts: { connectors?: string[] } & RequestOptions = {},
-  ): Promise<CapabilityData[]> {
-    const query =
-      opts.connectors && opts.connectors.length > 0 ? { connector: opts.connectors.join(',') } : undefined;
-    const body = await this.http.get<unknown>(`${this.userPath(externalId)}/tools`, {
-      query,
-      signal: opts.signal,
-    });
-    return unwrapList<CapabilityData>(body);
   }
 
   /** Scoped connections client for a specific user. */

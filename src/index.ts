@@ -21,11 +21,11 @@ export { CatalogClient } from './resources/catalog';
 export { AppUsersClient } from './resources/app-users';
 export { ConnectionsClient } from './resources/connections';
 export { CredentialsClient } from './resources/credentials';
-export { ExecutionClient } from './resources/execution';
+export { ConnectionTokensClient } from './resources/tokens';
 export type { CreateAppUserInput, UpdateAppUserInput } from './resources/app-users';
 export type { CreateConnectionInput } from './resources/connections';
 export type { SetCredentialsInput } from './resources/credentials';
-export type { ExecuteCapabilityInput } from './resources/execution';
+export type { IssueTokenInput } from './resources/tokens';
 
 // ── Infrastructure ──────────────────────────────────────────────────────────
 export { ResolverCache } from './core/cache';

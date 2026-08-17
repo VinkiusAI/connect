@@ -10,19 +10,16 @@ import { toLlamaIndexTools } from '../src/adapters/llamaindex';
 import { toWorkersAITools } from '../src/adapters/workers-ai';
 import type { CapabilitySet } from '../src';
 import type { JSONSchema } from '../src/types';
-import { capabilityData, makeVinkius, type Route } from './helpers/mock-fetch';
+import { connection, makeVinkius, runtimeRoute, tokenRoute, type Route } from './helpers/mock-fetch';
 
 const routes: Route[] = [
   {
     method: 'GET',
-    path: /^\/apps\/vk_app_test\/users\/customer-123\/tools$/,
-    respond: () => ({ body: { data: [capabilityData()] } }),
+    path: /^\/apps\/vk_app_test\/users\/customer-123\/mcps$/,
+    respond: () => ({ body: { data: [connection('conn_1', 'github', { ready: true })] } }),
   },
-  {
-    method: 'POST',
-    path: /^\/apps\/vk_app_test\/users\/customer-123\/mcps\/conn_1\/tools\/execute$/,
-    respond: () => ({ body: { content: [{ type: 'text', text: 'done' }], isError: false } }),
-  },
+  tokenRoute('conn_1'),
+  runtimeRoute(),
 ];
 
 async function getCapabilities(): Promise<CapabilitySet> {

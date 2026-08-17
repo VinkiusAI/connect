@@ -8,6 +8,7 @@
 import { ConfigError } from '../core/errors';
 import { HttpClient } from '../core/http';
 import { DEFAULT_RETRY } from '../core/retry';
+import { RuntimeClient } from '../core/runtime';
 import { AppUsersClient } from '../resources/app-users';
 import { CatalogClient } from '../resources/catalog';
 import type { VinkiusOptions } from '../types';
@@ -45,14 +46,19 @@ export class Vinkius {
     const baseUrl = normalizeBaseUrl(options.baseUrl ?? DEFAULT_BASE_URL);
     warnIfInsecure(baseUrl);
 
+    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const retry = { ...DEFAULT_RETRY, maxRetries: options.maxRetries ?? DEFAULT_RETRY.maxRetries };
+    const boundFetch = fetchImpl.bind(globalThis);
+    const userAgent = buildUserAgent(options.userAgent);
+
     const http = new HttpClient({
       baseUrl,
       apiKey,
       appId,
-      timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      retry: { ...DEFAULT_RETRY, maxRetries: options.maxRetries ?? DEFAULT_RETRY.maxRetries },
-      fetch: fetchImpl.bind(globalThis),
-      userAgent: buildUserAgent(options.userAgent),
+      timeoutMs,
+      retry,
+      fetch: boundFetch,
+      userAgent,
       hooks: options.hooks,
     });
 
@@ -60,6 +66,11 @@ export class Vinkius {
       http,
       appId,
       namespace: options.namespaceCapability ?? ((connector, name) => `${connector}__${name}`),
+      // The runtime is the sole execution surface; its config mirrors the API
+      // client's transport settings but carries no API auth (the mcp_url embeds
+      // the vk_live_* token).
+      runtime: (mcpUrl: string) =>
+        new RuntimeClient(mcpUrl, { timeoutMs, retry, fetch: boundFetch, userAgent }),
     };
 
     this.catalog = new CatalogClient(http);

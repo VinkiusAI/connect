@@ -8,10 +8,9 @@
 import { assertExternalId } from '../core/validate';
 import { AppUsersClient, type CreateAppUserInput } from '../resources/app-users';
 import type { AppUser, CapabilityQuery, ConnectorSummary, RequestOptions } from '../types';
-import { buildCapability, CapabilitySet } from './capability';
+import { CapabilitySet } from './capability';
 import { Connector } from './connector';
 import type { SdkContext } from './context';
-import { makeExecutor } from './executor';
 import { summarize } from './status';
 
 export class UserContext {
@@ -50,29 +49,38 @@ export class UserContext {
     return connections.map(summarize);
   }
 
-  /** Aggregated, executable capabilities for this user (the primary contract). */
+  /**
+   * Aggregated, executable capabilities across the user's ready connectors.
+   *
+   * Tools are listed and executed exclusively at the MCP runtime — the sole
+   * metered, revocable surface. Because each connection is billed and
+   * kill-switched independently by its own `vk_live_*` token, aggregation is a
+   * fan-out over the connected connectors (each resolves its own runtime), not a
+   * single API call. Only `ready` connectors are included; the rest cannot list
+   * tools until connected/credentialed.
+   *
+   * For a single connector, prefer `user.connector(slug).capabilities()` — it
+   * avoids resolving every connection.
+   */
   async capabilities(opts: CapabilityQuery = {}): Promise<CapabilitySet> {
-    const listOpts: { connectors?: string[]; signal?: AbortSignal } = {};
-    if (opts.include && opts.include.length > 0) listOpts.connectors = opts.include;
-    if (opts.signal) listOpts.signal = opts.signal;
+    const include = opts.include && opts.include.length > 0 ? new Set(opts.include) : undefined;
+    const exclude = opts.exclude && opts.exclude.length > 0 ? new Set(opts.exclude) : undefined;
+    const reqOpts: RequestOptions = opts.signal ? { signal: opts.signal } : {};
 
-    const raw = await this.users.capabilities(this.externalId, listOpts);
-    const executor = makeExecutor(this.ctx.http, this.ctx.appId, this.externalId);
-
-    let capabilities = raw.map((data) =>
-      buildCapability(data, {
-        connector: data.connector ?? '',
-        connectionId: data.connection_id ?? '',
-        namespace: this.ctx.namespace,
-        executor,
-      }),
+    const summaries = await this.connectors(reqOpts);
+    const targets = summaries.filter(
+      (s) =>
+        s.status === 'ready' &&
+        (!include || include.has(s.slug)) &&
+        (!exclude || !exclude.has(s.slug)),
     );
 
-    if (opts.exclude && opts.exclude.length > 0) {
-      const exclude = new Set(opts.exclude);
-      capabilities = capabilities.filter((capability) => !exclude.has(capability.connector));
-    }
+    const perConnector = await Promise.all(
+      targets.map((s) => this.connector(s.slug).capabilities(reqOpts)),
+    );
 
-    return CapabilitySet.fromCapabilities(capabilities);
+    const all = new CapabilitySet();
+    for (const set of perConnector) all.push(...set);
+    return all;
   }
 }

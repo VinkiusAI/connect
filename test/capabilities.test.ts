@@ -1,30 +1,39 @@
 import { describe, expect, it } from 'vitest';
 import { CapabilitySet } from '../src';
-import { capabilityData, makeVinkius, type Route } from './helpers/mock-fetch';
+import {
+  connection,
+  makeVinkius,
+  runtimeRoute,
+  runtimeTool,
+  tokenRoute,
+  type Route,
+} from './helpers/mock-fetch';
 
-describe('golden path: user.capabilities() → execute (external_id addressing)', () => {
-  const routes: Route[] = [
-    {
-      method: 'GET',
-      path: /^\/apps\/vk_app_test\/users\/customer-123\/tools$/,
-      respond: () => ({ body: { data: [capabilityData()] } }),
-    },
-    {
-      method: 'POST',
-      path: /^\/apps\/vk_app_test\/users\/customer-123\/mcps\/conn_1\/tools\/execute$/,
-      respond: (c) => ({ body: { content: [{ type: 'text', text: `ok:${JSON.stringify(c.body)}` }], isError: false } }),
-    },
-  ];
+/** GET .../mcps — the user's connections (drives the capabilities fan-out). */
+function connectionsRoute(connections: Array<Record<string, unknown>>): Route {
+  return {
+    method: 'GET',
+    path: /^\/apps\/vk_app_test\/users\/customer-123\/mcps$/,
+    respond: () => ({ body: { data: connections } }),
+  };
+}
 
-  it('returns a CapabilitySet, finds a namespaced capability, and executes it', async () => {
-    const { vinkius, calls } = makeVinkius(routes);
+describe('golden path: user.capabilities() → execute (runtime surface)', () => {
+  it('aggregates ready connectors from the runtime and executes a capability there', async () => {
+    const { vinkius, calls } = makeVinkius([
+      connectionsRoute([connection('conn_1', 'github', { ready: true })]),
+      tokenRoute('conn_1'),
+      runtimeRoute({
+        call: (rpc) => ({
+          content: [{ type: 'text', text: `ok:${JSON.stringify(rpc.params)}` }],
+          isError: false,
+        }),
+      }),
+    ]);
 
     const capabilities = await vinkius.user('customer-123').capabilities();
     expect(capabilities).toBeInstanceOf(CapabilitySet);
     expect(capabilities).toHaveLength(1);
-    // No user-resolution request preceded the capabilities call.
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.path).toBe('/apps/vk_app_test/users/customer-123/tools');
 
     const capability = capabilities.findCapability('github__create_issue');
     expect(capability).toBeDefined();
@@ -35,28 +44,57 @@ describe('golden path: user.capabilities() → execute (external_id addressing)'
     const result = await capability?.execute({ title: 'Hello Vinkius' });
     expect(result?.isError).toBe(false);
 
-    const execCall = calls.find((c) => c.path.endsWith('/tools/execute'));
-    expect(execCall?.body).toEqual({ tool_name: 'create_issue', arguments: { title: 'Hello Vinkius' } });
+    // Execution hits the runtime with a JSON-RPC tools/call, never the API.
+    const execCall = calls.find((c) => c.path === '/vk_live_test/mcp' && (c.body as { method?: string }).method === 'tools/call');
+    expect(execCall?.body).toMatchObject({
+      method: 'tools/call',
+      params: { name: 'create_issue', arguments: { title: 'Hello Vinkius' } },
+    });
   });
 
-  it('passes an include filter to the API as ?connector=', async () => {
-    const { vinkius, calls } = makeVinkius(routes);
-    await vinkius.user('customer-123').capabilities({ include: ['github', 'slack'] });
-    const call = calls.find((c) => c.path.endsWith('/tools'));
-    expect(call?.query.get('connector')).toBe('github,slack');
+  it('includes only the requested connectors (client-side fan-out filter)', async () => {
+    const { vinkius, calls } = makeVinkius([
+      connectionsRoute([
+        connection('conn_1', 'github', { ready: true }),
+        connection('conn_2', 'slack', { ready: true }),
+      ]),
+      tokenRoute('conn_1'),
+      runtimeRoute(),
+    ]);
+
+    const capabilities = await vinkius.user('customer-123').capabilities({ include: ['github'] });
+    expect(capabilities.map((c) => c.connector)).toEqual(['github']);
+    // Only github's token was minted — slack was filtered out before any call.
+    const tokenCalls = calls.filter((c) => c.path.endsWith('/tokens'));
+    expect(tokenCalls.map((c) => c.path)).toEqual([
+      '/apps/vk_app_test/users/customer-123/mcps/conn_1/tokens',
+    ]);
   });
 
-  it('applies exclude client-side', async () => {
-    const { vinkius } = makeVinkius([
-      {
-        method: 'GET',
-        path: /^\/apps\/vk_app_test\/users\/customer-123\/tools$/,
-        respond: () => ({
-          body: { data: [capabilityData('create_issue', 'github'), capabilityData('send', 'slack', 'conn_2')] },
-        }),
-      },
+  it('applies exclude before touching the runtime', async () => {
+    const { vinkius, calls } = makeVinkius([
+      connectionsRoute([
+        connection('conn_1', 'github', { ready: true }),
+        connection('conn_2', 'slack', { ready: true }),
+      ]),
+      tokenRoute('conn_1'),
+      runtimeRoute(),
     ]);
     const capabilities = await vinkius.user('customer-123').capabilities({ exclude: ['slack'] });
+    expect(capabilities.map((c) => c.connector)).toEqual(['github']);
+    expect(calls.some((c) => c.path.endsWith('/conn_2/tokens'))).toBe(false);
+  });
+
+  it('skips connectors that are not ready', async () => {
+    const { vinkius } = makeVinkius([
+      connectionsRoute([
+        connection('conn_1', 'github', { ready: true }),
+        connection('conn_2', 'slack', { ready: false }),
+      ]),
+      tokenRoute('conn_1'),
+      runtimeRoute({ tools: [runtimeTool('create_issue')] }),
+    ]);
+    const capabilities = await vinkius.user('customer-123').capabilities();
     expect(capabilities.map((c) => c.connector)).toEqual(['github']);
   });
 });
