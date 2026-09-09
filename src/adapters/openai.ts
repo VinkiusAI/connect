@@ -7,7 +7,7 @@
  */
 import type { Capability } from '../fluent/capability';
 import type { CapabilityResult, JSONSchema } from '../types';
-import { normalizeParams, parseArgs } from './shared';
+import { findCapability, normalizeParams, parseArgs } from './shared';
 
 export interface OpenAIFunctionTool {
   type: 'function';
@@ -40,7 +40,6 @@ export async function runOpenAIToolCall(
   capabilities: readonly Capability[],
   call: OpenAIToolCall,
 ): Promise<CapabilityResult> {
-  const capability = capabilities.find((candidate) => candidate.name === call.function.name);
-  if (!capability) throw new Error(`Unknown capability: ${call.function.name}`);
+  const capability = findCapability(capabilities, call.function.name);
   return capability.execute(parseArgs(call.function.arguments));
 }

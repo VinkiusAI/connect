@@ -68,9 +68,9 @@ export class Vinkius {
       namespace: options.namespaceCapability ?? ((connector, name) => `${connector}__${name}`),
       // The runtime is the sole execution surface; its config mirrors the API
       // client's transport settings but carries no API auth (the mcp_url embeds
-      // the vk_live_* token).
+      // the vk_live_* token). Hooks apply to the data plane too — redacted.
       runtime: (mcpUrl: string) =>
-        new RuntimeClient(mcpUrl, { timeoutMs, retry, fetch: boundFetch, userAgent }),
+        new RuntimeClient(mcpUrl, { timeoutMs, retry, fetch: boundFetch, userAgent, hooks: options.hooks }),
     };
 
     this.catalog = new CatalogClient(http);
@@ -107,7 +107,6 @@ function warnIfInsecure(baseUrl: string): void {
     const isLocal =
       host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host.endsWith('.localhost');
     if (parsed.protocol === 'http:' && !isLocal && typeof console !== 'undefined') {
-      // eslint-disable-next-line no-console
       console.warn('[vinkius] baseUrl uses insecure http:// on a non-local host; use https:// in production.');
     }
   } catch {

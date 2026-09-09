@@ -20,6 +20,13 @@ export class Connector {
   private connectionId: string | undefined;
   /** Runtime client for this connection — the sole execution surface. Memoized. */
   private runtimeClient: RuntimeClient | undefined;
+  /** Connection id the memoized runtime client was provisioned for. */
+  private provisionedFor: string | undefined;
+  /**
+   * In-flight (or settled) token provisioning, memoized as a Promise so
+   * concurrent callers share one mint instead of racing to create tokens.
+   */
+  private provisioning: Promise<string> | undefined;
   /** Credential management for this connector (operates on an existing connection). */
   readonly credentials: CredentialsHandle;
 
@@ -55,6 +62,9 @@ export class Connector {
     await this.connections().delete(connectionId, opts);
     this.connectionId = undefined;
     this.runtimeClient = undefined;
+    this.provisionedFor = undefined;
+    this.provisionedUrl = undefined;
+    this.provisioning = undefined;
   }
 
   /** Current readiness state. */
@@ -66,7 +76,25 @@ export class Connector {
   /** Capabilities exposed by this connector, listed directly from the runtime. */
   async capabilities(opts: RequestOptions = {}): Promise<CapabilitySet> {
     const { runtime, connectionId } = await this.resolveRuntime(opts);
-    const raw = await runtime.listTools({ signal: opts.signal });
+    return this.listCapabilities(runtime, connectionId, opts.signal);
+  }
+
+  /**
+   * @internal List capabilities for an ALREADY-KNOWN connection id — skips the
+   * connection lookup entirely (used by the user.capabilities() fan-out).
+   */
+  async capabilitiesForConnection(connectionId: string, opts: RequestOptions = {}): Promise<CapabilitySet> {
+    this.connectionId = connectionId;
+    const { runtime } = await this.resolveRuntime(opts);
+    return this.listCapabilities(runtime, connectionId, opts.signal);
+  }
+
+  private async listCapabilities(
+    runtime: RuntimeClient,
+    connectionId: string,
+    signal?: AbortSignal,
+  ): Promise<CapabilitySet> {
+    const raw = await runtime.listTools({ signal });
     const executor = makeExecutor(runtime);
     return CapabilitySet.fromCapabilities(
       raw.map((data) =>
@@ -95,7 +123,9 @@ export class Connector {
   /**
    * @internal Resolve the runtime client for this connection, provisioning a
    * token on demand. Memoized per handle so a single connect()/capabilities()
-   * flow mints at most one token.
+   * flow mints at most one token — including under concurrency: the in-flight
+   * provisioning Promise is shared, so parallel callers never race into a
+   * double mint.
    */
   private async resolveRuntime(
     opts: RequestOptions,
@@ -108,15 +138,37 @@ export class Connector {
 
   /** Mint the connection's data-plane token and memoize a runtime client from its mcp_url. */
   private async provisionRuntime(connectionId: string, opts: RequestOptions): Promise<string> {
-    const issued = await this.connections().tokens(connectionId).issue({}, opts);
-    if (!issued.mcp_url) {
-      throw new ProtocolError('Token provisioning did not return a runtime URL (mcp_url).', {
-        details: { connectionId },
-      });
+    // Memo hits are keyed by connection id: a NEW connection (e.g. after a
+    // delete + reconnect) must never inherit the previous token's mcp_url.
+    if (this.provisionedFor === connectionId && this.provisionedUrl !== undefined) {
+      return this.provisionedUrl;
     }
-    this.runtimeClient = this.ctx.runtime(issued.mcp_url);
-    return issued.mcp_url;
+    if (this.provisioning) return this.provisioning;
+
+    const attempt = (async (): Promise<string> => {
+      const issued = await this.connections().tokens(connectionId).issue({}, opts);
+      if (!issued.mcp_url) {
+        throw new ProtocolError('Token provisioning did not return a runtime URL (mcp_url).', {
+          details: { connectionId },
+        });
+      }
+      this.runtimeClient = this.ctx.runtime(issued.mcp_url);
+      this.provisionedFor = connectionId;
+      this.provisionedUrl = issued.mcp_url;
+      return issued.mcp_url;
+    })();
+
+    this.provisioning = attempt;
+    try {
+      return await attempt;
+    } catch (error) {
+      // A failed mint must not poison the handle: clear so a later call retries.
+      if (this.provisioning === attempt) this.provisioning = undefined;
+      throw error;
+    }
   }
+
+  private provisionedUrl: string | undefined;
 
   private async findConnection(opts: RequestOptions): Promise<Connection | undefined> {
     const connections = await this.connections().list(opts);

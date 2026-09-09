@@ -1,4 +1,6 @@
 /** Shared helpers for framework adapters. */
+import { NotFoundError } from '../core/errors';
+import type { Capability } from '../fluent/capability';
 import type { JSONSchema } from '../types';
 
 /** Ensure a usable JSON Schema object for function/tool parameters. */
@@ -16,4 +18,11 @@ export function parseArgs(raw: string): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+/** Find a capability by display name or raw name, throwing a typed error when absent. */
+export function findCapability(capabilities: readonly Capability[], name: string): Capability {
+  const capability = capabilities.find((candidate) => candidate.name === name || candidate.rawName === name);
+  if (!capability) throw new NotFoundError(`Unknown capability: ${name}`);
+  return capability;
 }

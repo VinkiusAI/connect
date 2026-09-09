@@ -20,6 +20,12 @@ export type JSONSchema = Record<string, unknown>;
 export interface RequestOptions {
   /** Abort the request (composed with the client's timeout). */
   signal?: AbortSignal;
+  /**
+   * Idempotency key forwarded as the `Idempotency-Key` header. Declaring it
+   * makes the request retry-safe: transport-level retries are enabled even for
+   * non-idempotent methods, and the server deduplicates replays.
+   */
+  idempotencyKey?: string;
 }
 
 /** Per-request controls for capability execution (adds idempotency). */
@@ -203,9 +209,9 @@ export interface CapabilityData {
 
 /** Filter for {@link CapabilitySet} aggregation. */
 export interface CapabilityQuery extends RequestOptions {
-  /** Restrict to these connector slugs (server-side filter). */
+  /** Restrict to these connector slugs (client-side filter before any call). */
   include?: string[];
-  /** Exclude these connector slugs (client-side filter). */
+  /** Exclude these connector slugs (client-side filter before any call). */
   exclude?: string[];
 }
 

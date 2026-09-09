@@ -45,7 +45,7 @@ export class ConnectionTokensClient {
       this.base(),
       input.name !== undefined ? { name: input.name } : {},
       // Not retry-safe: each POST mints a distinct token. Never auto-retry.
-      { idempotent: false, signal: opts.signal },
+      { idempotent: false, signal: opts.signal, idempotencyKey: opts.idempotencyKey },
     );
     return unwrapItem<IssuedConnectionToken>(body);
   }

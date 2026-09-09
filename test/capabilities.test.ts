@@ -97,4 +97,42 @@ describe('golden path: user.capabilities() → execute (runtime surface)', () =>
     const capabilities = await vinkius.user('customer-123').capabilities();
     expect(capabilities.map((c) => c.connector)).toEqual(['github']);
   });
+
+  it('resolves the connection list ONCE for the whole fan-out (no per-connector re-listing)', async () => {
+    const { vinkius, calls } = makeVinkius([
+      connectionsRoute([
+        connection('conn_1', 'github', { ready: true }),
+        connection('conn_2', 'slack', { ready: true }),
+      ]),
+      tokenRoute('conn_1'),
+      tokenRoute('conn_2'),
+      runtimeRoute(),
+    ]);
+
+    const capabilities = await vinkius.user('customer-123').capabilities();
+    expect(capabilities.map((c) => c.connector).sort()).toEqual(['github', 'slack']);
+
+    const listCalls = calls.filter(
+      (c) => c.method === 'GET' && c.path === '/apps/vk_app_test/users/customer-123/mcps',
+    );
+    expect(listCalls).toHaveLength(1);
+  });
+
+  it('emits redacted hooks for runtime traffic (vk_live token masked in the URL)', async () => {
+    const urls: string[] = [];
+    const { vinkius } = makeVinkius(
+      [connectionsRoute([connection('conn_1', 'github', { ready: true })]), tokenRoute('conn_1'), runtimeRoute()],
+      {
+        hooks: {
+          onRequest: (info) => urls.push(info.url),
+          onResponse: (info) => urls.push(info.url),
+        },
+      },
+    );
+
+    await vinkius.user('customer-123').capabilities();
+
+    expect(urls).toContain('http://localhost:9090/[REDACTED]/mcp');
+    expect(urls.every((u) => !u.includes('vk_live_test'))).toBe(true);
+  });
 });

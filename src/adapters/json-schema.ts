@@ -9,7 +9,7 @@
  */
 import type { Capability } from '../fluent/capability';
 import type { CapabilityResult, JSONSchema } from '../types';
-import { normalizeParams } from './shared';
+import { findCapability, normalizeParams } from './shared';
 
 export interface JSONSchemaTool {
   name: string;
@@ -32,7 +32,6 @@ export async function executeByName(
   name: string,
   args?: Record<string, unknown>,
 ): Promise<CapabilityResult> {
-  const capability = capabilities.find((candidate) => candidate.name === name || candidate.rawName === name);
-  if (!capability) throw new Error(`Unknown capability: ${name}`);
+  const capability = findCapability(capabilities, name);
   return capability.execute(args ?? {});
 }

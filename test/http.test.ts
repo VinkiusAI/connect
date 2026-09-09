@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { ConfigError, ConnectionError, Vinkius } from '../src';
+import { ConfigError, ConnectionError, NotFoundError, Vinkius } from '../src';
+import { runOpenAIToolCall } from '../src/adapters/openai';
 import { makeVinkius, type Route } from './helpers/mock-fetch';
 
 describe('config validation', () => {
@@ -66,5 +67,31 @@ describe('HttpClient behavior', () => {
     const promise = vinkius.users.get('someuser', { signal: controller.signal });
     controller.abort();
     await expect(promise).rejects.toBeInstanceOf(ConnectionError);
+  });
+
+  it('retries a POST carrying an idempotency key (the key makes it retry-safe)', async () => {
+    let attempts = 0;
+    const route: Route = {
+      method: 'POST',
+      path: /^\/apps\/vk_app_test\/users$/,
+      respond: (c) => {
+        attempts += 1;
+        if (attempts < 2) return { status: 503, body: { message: 'unavailable' } };
+        return { body: { data: { id: 'x', external_id: (c.body as { external_id: string }).external_id } } };
+      },
+    };
+    const { vinkius, calls } = makeVinkius([route], { maxRetries: 2 });
+    const result = await vinkius.users.create({ external_id: 'usr_1' }, { idempotencyKey: 'key-123' });
+    expect(result.id).toBe('x');
+    expect(attempts).toBe(2);
+    expect(calls.every((c) => c.headers.get('idempotency-key') === 'key-123')).toBe(true);
+  });
+});
+
+describe('adapter dispatch', () => {
+  it('throws a typed NotFoundError for an unknown capability', async () => {
+    await expect(runOpenAIToolCall([], { function: { name: 'nope', arguments: '{}' } })).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
   });
 });

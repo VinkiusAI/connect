@@ -7,7 +7,7 @@
  */
 import type { Capability } from '../fluent/capability';
 import type { CapabilityResult, JSONSchema } from '../types';
-import { normalizeParams } from './shared';
+import { findCapability, normalizeParams } from './shared';
 
 export interface AnthropicTool {
   name: string;
@@ -35,7 +35,6 @@ export async function runAnthropicToolUse(
   capabilities: readonly Capability[],
   use: AnthropicToolUse,
 ): Promise<CapabilityResult> {
-  const capability = capabilities.find((candidate) => candidate.name === use.name);
-  if (!capability) throw new Error(`Unknown capability: ${use.name}`);
+  const capability = findCapability(capabilities, use.name);
   return capability.execute(use.input ?? {});
 }

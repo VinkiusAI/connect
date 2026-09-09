@@ -35,7 +35,7 @@ export class ConnectionsClient {
 
   /** List the user's connections (not paginated; empty for an unknown user). */
   async list(opts: RequestOptions = {}): Promise<Connection[]> {
-    const body = await this.http.get<unknown>(this.base(), { signal: opts.signal });
+    const body = await this.http.get<unknown>(this.base(), { signal: opts.signal, idempotencyKey: opts.idempotencyKey });
     return unwrapList<Connection>(body);
   }
 
@@ -43,21 +43,21 @@ export class ConnectionsClient {
   async create(input: CreateConnectionInput, opts: RequestOptions = {}): Promise<Connection> {
     const body = await this.http.post<unknown>(this.base(), { catalog_mcp_id: input.connector }, {
       idempotent: true,
-      signal: opts.signal,
+      signal: opts.signal, idempotencyKey: opts.idempotencyKey,
     });
     return unwrapItem<Connection>(body);
   }
 
   async get(connectionId: string, opts: RequestOptions = {}): Promise<Connection> {
     const body = await this.http.get<unknown>(`${this.base()}/${encodeURIComponent(connectionId)}`, {
-      signal: opts.signal,
+      signal: opts.signal, idempotencyKey: opts.idempotencyKey,
     });
     return unwrapItem<Connection>(body);
   }
 
   async delete(connectionId: string, opts: RequestOptions = {}): Promise<void> {
     await this.http.delete<unknown>(`${this.base()}/${encodeURIComponent(connectionId)}`, {
-      signal: opts.signal,
+      signal: opts.signal, idempotencyKey: opts.idempotencyKey,
     });
   }
 

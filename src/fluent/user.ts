@@ -59,8 +59,10 @@ export class UserContext {
    * single API call. Only `ready` connectors are included; the rest cannot list
    * tools until connected/credentialed.
    *
-   * For a single connector, prefer `user.connector(slug).capabilities()` — it
-   * avoids resolving every connection.
+   * The connection list is fetched ONCE and each connector handle reuses the
+   * connection id already resolved by {@link summarize} — no per-connector
+   * re-listing. For a single connector, prefer
+   * `user.connector(slug).capabilities()` — it avoids listing every connection.
    */
   async capabilities(opts: CapabilityQuery = {}): Promise<CapabilitySet> {
     const include = opts.include && opts.include.length > 0 ? new Set(opts.include) : undefined;
@@ -76,7 +78,11 @@ export class UserContext {
     );
 
     const perConnector = await Promise.all(
-      targets.map((s) => this.connector(s.slug).capabilities(reqOpts)),
+      targets.map((s) =>
+        s.connectionId !== undefined
+          ? this.connector(s.slug).capabilitiesForConnection(s.connectionId, reqOpts)
+          : this.connector(s.slug).capabilities(reqOpts),
+      ),
     );
 
     const all = new CapabilitySet();

@@ -14,7 +14,7 @@
  */
 import type { Capability } from '../fluent/capability';
 import type { CapabilityResult, JSONSchema } from '../types';
-import { normalizeParams } from './shared';
+import { findCapability, normalizeParams } from './shared';
 
 export interface GeminiFunctionDeclaration {
   name: string;
@@ -42,7 +42,6 @@ export async function runGeminiFunctionCall(
   capabilities: readonly Capability[],
   call: GeminiFunctionCall,
 ): Promise<CapabilityResult> {
-  const capability = capabilities.find((candidate) => candidate.name === call.name);
-  if (!capability) throw new Error(`Unknown capability: ${call.name}`);
+  const capability = findCapability(capabilities, call.name);
   return capability.execute(call.args ?? {});
 }

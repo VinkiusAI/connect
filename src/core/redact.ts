@@ -37,6 +37,15 @@ export function redactHeaders(headers: Record<string, string>): Record<string, s
 }
 
 /**
+ * Mask any `vk_live_*` path segment in a URL. The data-plane runtime endpoint
+ * embeds its bearer token in the path (`{RUNTIME}/{vk_live_*}/mcp`), so the raw
+ * URL must never reach an observability hook.
+ */
+export function redactUrl(url: string): string {
+  return url.replace(/vk_live_[A-Za-z0-9_-]+/g, REDACTED);
+}
+
+/**
  * Deep-clone a value, redacting any property whose key looks like a secret.
  * Depth-limited and cycle-safe.
  */

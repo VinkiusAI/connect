@@ -9,24 +9,22 @@
  *
  * Responsibilities:
  *  - `tools/list` (free, un-metered) and `tools/call` (metered) as single POSTs.
- *  - Per-request timeout composed with a caller AbortSignal.
  *  - Retries for the idempotent `tools/list` only; `tools/call` retries solely
  *    when the caller supplies an idempotency key (side-effect safety).
  *  - Runtime error mapping: revoked token (403) → AuthError, unknown (404) →
  *    NotFoundError, transient (5xx) → ConnectionError, JSON-RPC errors →
  *    ProtocolError. Tool-level failures are returned as `{ isError: true }`.
+ *  - Redacted observability hooks (the `vk_live_*` path segment is masked).
  */
 import {
   AuthError,
-  ConnectionError,
   NotFoundError,
   ProtocolError,
   VinkiusError,
 } from './errors';
-import { backoffDelay, isRetryableStatus, parseRetryAfter, sleep, type RetryPolicy } from './retry';
-import type { CapabilityData, CapabilityResult } from '../types';
-
-type FetchLike = typeof globalThis.fetch;
+import type { RetryPolicy } from './retry';
+import { Transport, type FetchLike } from './transport';
+import type { CapabilityData, CapabilityResult, Hooks } from '../types';
 
 /** JSON-RPC protocol version advertised to the runtime (2026-era stateless). */
 const MCP_PROTOCOL_VERSION = '2026-07-28';
@@ -36,6 +34,7 @@ export interface RuntimeClientConfig {
   retry: RetryPolicy;
   fetch: FetchLike;
   userAgent: string;
+  hooks?: Hooks | undefined;
 }
 
 interface RuntimeCallOptions {
@@ -57,12 +56,17 @@ interface JsonRpcEnvelope {
  */
 export class RuntimeClient {
   private nextId = 1;
+  private readonly transport: Transport;
+  private readonly userAgent: string;
 
   constructor(
     /** Full runtime endpoint: {RUNTIME}/{token}/mcp. Embeds the vk_live_* token. */
     private readonly mcpUrl: string,
-    private readonly cfg: RuntimeClientConfig,
-  ) {}
+    cfg: RuntimeClientConfig,
+  ) {
+    this.transport = new Transport(cfg);
+    this.userAgent = cfg.userAgent;
+  }
 
   /** List the tools this connection exposes. Free (un-metered) at the runtime. */
   async listTools(opts: { signal?: AbortSignal } = {}): Promise<CapabilityData[]> {
@@ -97,53 +101,20 @@ export class RuntimeClient {
     retryable: boolean,
   ): Promise<unknown> {
     const bodyText = JSON.stringify({ jsonrpc: '2.0', id: this.nextId++, method, params });
-    const maxAttempts = retryable ? this.cfg.retry.maxRetries + 1 : 1;
+    const result = await this.transport.send({
+      url: this.mcpUrl,
+      method: 'POST',
+      headers: this.headers(opts.idempotencyKey),
+      body: bodyText,
+      signal: opts.signal,
+      retryable,
+      label: 'Runtime request',
+    });
 
-    let attempt = 0;
-    for (;;) {
-      const { signal, cleanup } = this.composeSignal(opts.signal);
-      let response: Response;
-      try {
-        response = await this.cfg.fetch(this.mcpUrl, {
-          method: 'POST',
-          headers: this.headers(opts.idempotencyKey),
-          body: bodyText,
-          signal,
-        });
-      } catch (error) {
-        cleanup();
-        if (isCallerAbort(error, opts.signal)) {
-          throw new ConnectionError('Runtime request aborted by caller', { cause: error });
-        }
-        if (retryable && attempt < maxAttempts - 1) {
-          await this.pause(attempt, undefined, opts.signal);
-          attempt += 1;
-          continue;
-        }
-        if (isAbortError(error)) {
-          throw new ConnectionError(`Runtime request timed out after ${this.cfg.timeoutMs}ms`, {
-            cause: error,
-          });
-        }
-        throw new ConnectionError('Runtime request failed', { cause: error });
-      } finally {
-        cleanup();
-      }
-
-      const text = await response.text();
-
-      if (!response.ok) {
-        const retryAfterMs = parseRetryAfter(response.headers.get('retry-after'));
-        if (retryable && isRetryableStatus(response.status) && attempt < maxAttempts - 1) {
-          await this.pause(attempt, retryAfterMs, opts.signal);
-          attempt += 1;
-          continue;
-        }
-        throw mapRuntimeHttpError(response.status, parseBody(text));
-      }
-
-      return this.unwrapEnvelope(parseBody(text));
+    if (result.status < 200 || result.status >= 300) {
+      throw mapRuntimeHttpError(result.status, result.body);
     }
+    return this.unwrapEnvelope(result.body);
   }
 
   /** Extract the JSON-RPC `result`, or map a JSON-RPC `error` object. */
@@ -170,32 +141,10 @@ export class RuntimeClient {
       'content-type': 'application/json',
       accept: 'application/json, text/event-stream',
       'mcp-protocol-version': MCP_PROTOCOL_VERSION,
-      'user-agent': this.cfg.userAgent,
+      'user-agent': this.userAgent,
     };
     if (idempotencyKey) headers['idempotency-key'] = idempotencyKey;
     return headers;
-  }
-
-  private async pause(attempt: number, retryAfterMs: number | undefined, signal?: AbortSignal): Promise<void> {
-    await sleep(backoffDelay(attempt, this.cfg.retry, retryAfterMs), signal);
-  }
-
-  private composeSignal(caller?: AbortSignal): { signal: AbortSignal; cleanup: () => void } {
-    const controller = new AbortController();
-    const timer = setTimeout(
-      () => controller.abort(new DOMException('Timeout', 'AbortError')),
-      this.cfg.timeoutMs,
-    );
-    const forward = (): void => controller.abort(caller?.reason);
-    if (caller) {
-      if (caller.aborted) controller.abort(caller.reason);
-      else caller.addEventListener('abort', forward, { once: true });
-    }
-    const cleanup = (): void => {
-      clearTimeout(timer);
-      caller?.removeEventListener('abort', forward);
-    };
-    return { signal: controller.signal, cleanup };
   }
 }
 
@@ -254,16 +203,6 @@ function pickRuntimeMessage(body: unknown, fallback: string): string {
   return fallback;
 }
 
-/** Parse a runtime body: JSON, or the last data frame of an SSE stream. */
-function parseBody(text: string): unknown {
-  if (!text) return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
-}
-
 /** Accept either a JSON object or an SSE stream string; return the JSON-RPC envelope. */
 function extractEnvelope(body: unknown): unknown {
   if (typeof body !== 'string') return body;
@@ -280,12 +219,4 @@ function extractEnvelope(body: unknown): unknown {
     }
   }
   return last ?? body;
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === 'AbortError';
-}
-
-function isCallerAbort(error: unknown, callerSignal?: AbortSignal): boolean {
-  return isAbortError(error) && callerSignal?.aborted === true;
 }

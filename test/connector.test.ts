@@ -93,4 +93,21 @@ describe('Connector (external_id addressing)', () => {
       ConnectorNotConnectedError,
     );
   });
+
+  it('shares a single token mint across concurrent capability resolutions', async () => {
+    const { vinkius, calls } = makeVinkius([
+      listRoute([connection('conn_1', 'github')]),
+      tokenRoute(),
+      runtimeRoute(),
+    ]);
+    const github = vinkius.user('customer-123').connector('github');
+
+    const [a, b] = await Promise.all([github.capabilities(), github.capabilities()]);
+
+    expect(a).toHaveLength(1);
+    expect(b).toHaveLength(1);
+    // Parallel callers share the in-flight provisioning: exactly one mint.
+    const tokenCalls = calls.filter((c) => c.path.endsWith('/tokens'));
+    expect(tokenCalls).toHaveLength(1);
+  });
 });
