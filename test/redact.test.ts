@@ -51,6 +51,14 @@ describe('redactBody', () => {
     expect(out['self']).toBe('[CIRCULAR]');
   });
 
+  it('clones shared (non-cyclic) references instead of flagging them as circular', () => {
+    const shared = { safe: 'ok' };
+    const body = { a: shared, b: shared };
+    const out = redactBody(body) as Record<string, unknown>;
+    expect(out['a']).toEqual({ safe: 'ok' });
+    expect(out['b']).toEqual({ safe: 'ok' });
+  });
+
   it('truncates at max depth', () => {
     let deep: Record<string, unknown> = { leaf: true };
     for (let i = 0; i < 10; i++) deep = { child: deep };

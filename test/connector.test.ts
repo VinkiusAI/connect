@@ -4,7 +4,9 @@ import {
   connection,
   makeVinkius,
   runtimeRoute,
+  RUNTIME_MCP_PATH,
   RUNTIME_MCP_URL,
+  runtimeTool,
   tokenRoute,
   type Route,
 } from './helpers/mock-fetch';
@@ -109,5 +111,24 @@ describe('Connector (external_id addressing)', () => {
     // Parallel callers share the in-flight provisioning: exactly one mint.
     const tokenCalls = calls.filter((c) => c.path.endsWith('/tokens'));
     expect(tokenCalls).toHaveLength(1);
+  });
+
+  it('unwraps JSON-RPC results from SSE frames, with or without the space after data:', async () => {
+    const sseRuntime: Route = {
+      method: 'POST',
+      path: RUNTIME_MCP_PATH,
+      respond: (c) => {
+        const rpc = c.body as { id: unknown };
+        const keepAlive = 'data: {"jsonrpc":"2.0","id":0,"result":{"tools":[]}}';
+        const final = `data:${JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { tools: [runtimeTool()] } })}`;
+        return { headers: { 'content-type': 'text/event-stream' }, body: `${keepAlive}\n\n${final}\n\n` };
+      },
+    };
+    const { vinkius } = makeVinkius([listRoute([connection('conn_1', 'github')]), tokenRoute(), sseRuntime]);
+
+    const capabilities = await vinkius.user('customer-123').connector('github').capabilities();
+
+    expect(capabilities).toHaveLength(1);
+    expect(capabilities[0]?.rawName).toBe('create_issue');
   });
 });

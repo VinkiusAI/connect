@@ -6,6 +6,7 @@
  * external_id directly — the SDK never resolves nor holds an internal user id.
  */
 import { assertExternalId } from '../core/validate';
+import { pooledMap } from '../core/pool';
 import { AppUsersClient, type CreateAppUserInput } from '../resources/app-users';
 import type { AppUser, CapabilityQuery, ConnectorSummary, RequestOptions } from '../types';
 import { CapabilitySet } from './capability';
@@ -77,16 +78,31 @@ export class UserContext {
         (!exclude || !exclude.has(s.slug)),
     );
 
-    const perConnector = await Promise.all(
-      targets.map((s) =>
-        s.connectionId !== undefined
-          ? this.connector(s.slug).capabilitiesForConnection(s.connectionId, reqOpts)
-          : this.connector(s.slug).capabilities(reqOpts),
-      ),
-    );
+    // Failure-tolerant, concurrency-limited fan-out: one flaky runtime must not
+    // sink the whole aggregation (all-failed still throws), and N connectors do
+    // not open N simultaneous sockets.
+    const MAX_FANOUT_CONCURRENCY = 8;
+    let firstError: unknown;
+    const settled = await pooledMap(targets, MAX_FANOUT_CONCURRENCY, async (s): Promise<CapabilitySet | null> => {
+      try {
+        return s.connectionId !== undefined
+          ? await this.connector(s.slug).capabilitiesForConnection(s.connectionId, reqOpts)
+          : await this.connector(s.slug).capabilities(reqOpts);
+      } catch (error) {
+        firstError ??= error; // isolated failure — never sinks the batch
+        return null;
+      }
+    });
+
+    const failures = settled.filter((set) => set === null).length;
+    if (failures > 0 && failures === targets.length) {
+      throw firstError;
+    }
 
     const all = new CapabilitySet();
-    for (const set of perConnector) all.push(...set);
+    for (const set of settled) {
+      if (set !== null) all.push(...set);
+    }
     return all;
   }
 }

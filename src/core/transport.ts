@@ -63,6 +63,7 @@ export class Transport {
         method: req.method,
         url: redactUrl(req.url),
         headers: redactHeaders(req.headers),
+        attempt,
       });
 
       let response: Response;
@@ -89,7 +90,27 @@ export class Transport {
       }
 
       const requestId = extractRequestId(response);
-      const body = parseBody(await response.text());
+      // Read the body INSIDE the same timeout window: a stalled stream that has
+      // already sent headers must time out, not hang forever.
+      let body: unknown;
+      try {
+        body = parseBody(await raceWithTimeout(response, this.cfg.timeoutMs));
+      } catch (error) {
+        void response.body?.cancel().catch(() => {});
+        if (isCallerAbort(error, req.signal)) {
+          throw new ConnectionError(`${req.label} aborted by caller`, { cause: error });
+        }
+        if (req.retryable && attempt < maxAttempts - 1) {
+          await this.pause(req, attempt, undefined, req.signal);
+          attempt += 1;
+          continue;
+        }
+        if (isAbortError(error)) {
+          throw new ConnectionError(`${req.label} timed out after ${this.cfg.timeoutMs}ms`, { cause: error });
+        }
+        throw new ConnectionError(`${req.label} failed`, { cause: error });
+      }
+
       const retryAfterMs = parseRetryAfter(response.headers.get('retry-after'));
 
       this.cfg.hooks?.onResponse?.({
@@ -97,6 +118,7 @@ export class Transport {
         url: redactUrl(req.url),
         ...(requestId !== undefined ? { requestId } : {}),
         body: redactBody(body),
+        attempt,
       });
 
       if (response.status >= 200 && response.status < 300) {
@@ -155,6 +177,25 @@ function extractRequestId(response: Response): string | undefined {
     if (value) return value;
   }
   return undefined;
+}
+
+/**
+ * Read a response body under a hard deadline. `response.text()` alone is NOT
+ * covered by the fetch signal in every runtime once headers have arrived, so a
+ * stalled stream could hang the caller forever; the race bounds it.
+ */
+function raceWithTimeout(response: Response, timeoutMs: number): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      void response.body?.cancel().catch(() => {});
+      reject(new DOMException('Timeout', 'AbortError'));
+    }, timeoutMs);
+  });
+  return Promise.race([
+    response.text().finally(() => clearTimeout(timer)),
+    deadline,
+  ]);
 }
 
 function parseBody(text: string): unknown {

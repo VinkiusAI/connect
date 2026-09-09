@@ -59,13 +59,22 @@ function clone(value: unknown, depth: number, seen: WeakSet<object>): unknown {
   if (seen.has(value as object)) return '[CIRCULAR]';
   seen.add(value as object);
 
-  if (Array.isArray(value)) {
-    return value.map((item) => clone(item, depth + 1, seen));
-  }
-
-  const out: Record<string, unknown> = {};
-  for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
-    out[key] = SECRET_KEYS.has(key.toLowerCase()) ? REDACTED : clone(val, depth + 1, seen);
+  let out: unknown;
+  try {
+    if (Array.isArray(value)) {
+      out = value.map((item) => clone(item, depth + 1, seen));
+    } else {
+      const record: Record<string, unknown> = {};
+      for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+        record[key] = SECRET_KEYS.has(key.toLowerCase()) ? REDACTED : clone(val, depth + 1, seen);
+      }
+      out = record;
+    }
+  } finally {
+    // Backtrack: only the ACTIVE recursion path counts as a cycle. Shared
+    // (diamond) references that appear twice but do not loop must clone again
+    // instead of being flagged [CIRCULAR].
+    seen.delete(value as object);
   }
   return out;
 }

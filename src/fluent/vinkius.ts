@@ -6,6 +6,7 @@
  * clear {@link ConfigError}.
  */
 import { ConfigError } from '../core/errors';
+import { ResolverCache } from '../core/cache';
 import { HttpClient } from '../core/http';
 import { DEFAULT_RETRY } from '../core/retry';
 import { RuntimeClient } from '../core/runtime';
@@ -65,6 +66,7 @@ export class Vinkius {
     this.ctx = {
       http,
       appId,
+      cache: new ResolverCache(),
       namespace: options.namespaceCapability ?? ((connector, name) => `${connector}__${name}`),
       // The runtime is the sole execution surface; its config mirrors the API
       // client's transport settings but carries no API auth (the mcp_url embeds

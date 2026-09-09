@@ -56,6 +56,40 @@ describe('HttpClient behavior', () => {
     expect(seen[0]?.['authorization']).toBe('[REDACTED]');
   });
 
+  it('reports the 0-based attempt to hooks when a request is retried', async () => {
+    const attempts: number[] = [];
+    let count = 0;
+    const route: Route = {
+      method: 'GET',
+      path: /^\/apps\/vk_app_test\/users\/someuser$/,
+      respond: () => {
+        count += 1;
+        return count < 2 ? { status: 503, body: {} } : { body: { data: { id: 'x' } } };
+      },
+    };
+    const { vinkius } = makeVinkius([route], {
+      maxRetries: 2,
+      hooks: { onResponse: (info) => attempts.push(info.attempt ?? -1) },
+    });
+    await vinkius.users.get('someuser');
+    expect(attempts).toEqual([0, 1]);
+  });
+
+  it('times out a response whose body stalls after the headers', async () => {
+    const stalledFetch = (async (): Promise<Response> => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"data":'));
+          // Never closes — body hangs after headers.
+        },
+      });
+      return new Response(stream, { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as unknown as typeof globalThis.fetch;
+
+    const { vinkius } = makeVinkius([], { timeoutMs: 50, fetch: stalledFetch });
+    await expect(vinkius.users.get('someuser')).rejects.toMatchObject({ code: 'connection_error' });
+  });
+
   it('aborts when the caller signal fires', async () => {
     const controller = new AbortController();
     const route: Route = {

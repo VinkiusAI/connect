@@ -209,9 +209,11 @@ function extractEnvelope(body: unknown): unknown {
   let last: unknown;
   for (const line of body.split('\n')) {
     const trimmed = line.trim();
-    if (trimmed.startsWith('data: ')) {
+    // The SSE spec allows `data:` with OR without a following space.
+    if (trimmed.startsWith('data:')) {
+      const payloadText = trimmed.slice(5).trimStart();
       try {
-        const payload = JSON.parse(trimmed.slice(6));
+        const payload = JSON.parse(payloadText);
         if (payload && typeof payload === 'object') last = payload;
       } catch {
         // Ignore non-JSON SSE frames (comments, keep-alives).

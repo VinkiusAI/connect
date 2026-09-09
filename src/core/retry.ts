@@ -25,11 +25,13 @@ export function isRetryableStatus(status: number): boolean {
 
 /**
  * Compute the delay before the next attempt (0-indexed).
- * Honors an explicit `retryAfterMs` when provided; otherwise full jitter over
- * an exponentially growing window capped at `maxDelayMs`.
+ * A positive `retryAfterMs` (server hint) wins, capped at `maxDelayMs`.
+ * `Retry-After: 0` is treated as NO hint: honoring it exactly would make
+ * simultaneous clients hammer the server in lockstep — full jitter instead.
+ * Without a hint, full jitter over an exponentially growing window.
  */
 export function backoffDelay(attempt: number, policy: RetryPolicy, retryAfterMs?: number): number {
-  if (retryAfterMs !== undefined && retryAfterMs >= 0) {
+  if (retryAfterMs !== undefined && retryAfterMs > 0) {
     return Math.min(retryAfterMs, policy.maxDelayMs);
   }
   const window = Math.min(policy.maxDelayMs, policy.baseDelayMs * 2 ** attempt);

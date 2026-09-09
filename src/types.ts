@@ -40,10 +40,22 @@ export interface ExecuteOptions extends RequestOptions {
 /**
  * Observability hooks. `headers` and `body` are ALWAYS redacted before being
  * handed to these callbacks — secrets never reach a hook. See core/redact.
+ * `attempt` is the 0-based retry attempt that produced the event.
  */
 export interface Hooks {
-  onRequest?: (info: { method: string; url: string; headers: Record<string, string> }) => void;
-  onResponse?: (info: { status: number; url: string; requestId?: string; body: unknown }) => void;
+  onRequest?: (info: {
+    method: string;
+    url: string;
+    headers: Record<string, string>;
+    attempt?: number;
+  }) => void;
+  onResponse?: (info: {
+    status: number;
+    url: string;
+    requestId?: string;
+    body: unknown;
+    attempt?: number;
+  }) => void;
 }
 
 /** Options accepted by the {@link Vinkius} constructor. */

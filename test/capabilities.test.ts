@@ -135,4 +135,37 @@ describe('golden path: user.capabilities() → execute (runtime surface)', () =>
     expect(urls).toContain('http://localhost:9090/[REDACTED]/mcp');
     expect(urls.every((u) => !u.includes('vk_live_test'))).toBe(true);
   });
+
+  it('keeps partial results when one connector fails in the fan-out', async () => {
+    // github's token mint succeeds; slack's fails → github's capabilities survive.
+    const { vinkius } = makeVinkius([
+      connectionsRoute([
+        connection('conn_1', 'github', { ready: true }),
+        connection('conn_2', 'slack', { ready: true }),
+      ]),
+      tokenRoute('conn_1'),
+      {
+        method: 'POST',
+        path: /^\/apps\/vk_app_test\/users\/customer-123\/mcps\/conn_2\/tokens$/,
+        respond: () => ({ status: 500, body: { message: 'boom' } }),
+      },
+      runtimeRoute(),
+    ]);
+
+    const capabilities = await vinkius.user('customer-123').capabilities();
+    expect(capabilities.map((c) => c.connector)).toEqual(['github']);
+  });
+
+  it('throws when ALL connectors fail in the fan-out', async () => {
+    const { vinkius } = makeVinkius([
+      connectionsRoute([connection('conn_1', 'github', { ready: true })]),
+      {
+        method: 'POST',
+        path: /^\/apps\/vk_app_test\/users\/customer-123\/mcps\/conn_1\/tokens$/,
+        respond: () => ({ status: 500, body: { message: 'boom' } }),
+      },
+    ]);
+
+    await expect(vinkius.user('customer-123').capabilities()).rejects.toMatchObject({ status: 500 });
+  });
 });

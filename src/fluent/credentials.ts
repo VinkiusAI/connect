@@ -19,10 +19,16 @@ export class CredentialsHandle {
     private readonly connector: Connector,
   ) {}
 
-  /** The credential schema this connector requires (from the catalog). */
+  /**
+   * The credential schema this connector requires (from the catalog).
+   * Cached (non-secret, stable data — per the cache golden rule, no credential
+   * VALUES ever pass through here, only field descriptors).
+   */
   async schema(opts: RequestOptions = {}): Promise<CredentialSchema> {
-    const detail = await new CatalogClient(this.ctx.http).get(this.connector.slug, opts);
-    return detail.credential_schema;
+    return this.ctx.cache.resolve(`credential-schema:${this.connector.slug}`, async () => {
+      const detail = await new CatalogClient(this.ctx.http).get(this.connector.slug, opts);
+      return detail.credential_schema;
+    });
   }
 
   /** Which credential keys are configured (never the values). */
