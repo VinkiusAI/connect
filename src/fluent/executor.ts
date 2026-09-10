@@ -12,5 +12,6 @@ export function makeExecutor(runtime: RuntimeClient): CapabilityExecutor {
     runtime.callTool(rawName, args, {
       signal: opts?.signal,
       idempotencyKey: opts?.idempotencyKey,
+      timeoutMs: opts?.timeoutMs,
     });
 }

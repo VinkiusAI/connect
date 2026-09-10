@@ -49,6 +49,8 @@ export interface HttpRequest {
    */
   idempotencyKey?: string | undefined;
   headers?: Record<string, string> | undefined;
+  /** Per-request deadline in ms, overriding the client-level `timeoutMs`. */
+  timeoutMs?: number | undefined;
 }
 
 export class HttpClient {
@@ -92,6 +94,7 @@ export class HttpClient {
       signal: req.signal,
       retryable,
       label: 'Request',
+      timeoutMs: req.timeoutMs,
     });
 
     if (result.status >= 200 && result.status < 300) return result.body as T;

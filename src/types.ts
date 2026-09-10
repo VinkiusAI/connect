@@ -26,6 +26,12 @@ export interface RequestOptions {
    * non-idempotent methods, and the server deduplicates replays.
    */
   idempotencyKey?: string;
+  /**
+   * Per-request deadline in milliseconds, overriding the client-level
+   * `timeoutMs`. Covers both the connection wait and the body read, and is
+   * composed with `signal`. Useful for long-running tool executions.
+   */
+  timeoutMs?: number;
 }
 
 /** Per-request controls for capability execution (adds idempotency). */
@@ -204,6 +210,13 @@ export interface ConnectorSummary {
 export interface CapabilityResult {
   content: Array<{ type: string; text: string }>;
   isError: boolean;
+  /**
+   * Structured (parsed) output returned by the capability, when the connector
+   * provides it. The MCP data plane carries `structuredContent` on tool results;
+   * it is surfaced here verbatim (never parsed by the SDK) for callers who
+   * prefer typed objects over the string `content`. Absent when unavailable.
+   */
+  structuredContent?: unknown;
 }
 
 /** Raw capability shape returned by the Execution Plane endpoints. */
@@ -225,6 +238,13 @@ export interface CapabilityQuery extends RequestOptions {
   include?: string[];
   /** Exclude these connector slugs (client-side filter before any call). */
   exclude?: string[];
+  /**
+   * Observe partial fan-out failures. When a single connector's capability list
+   * fails, the aggregation is failure-tolerant (the rest still resolves), but by
+   * default the failure is swallowed. Provide this callback to be notified of the
+   * slug and the thrown error for that connector.
+   */
+  onConnectorError?: (slug: string, error: unknown) => void;
 }
 
 // ── Pagination ──────────────────────────────────────────────────────────────

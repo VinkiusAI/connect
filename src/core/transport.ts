@@ -33,6 +33,8 @@ export interface TransportRequest {
   retryable: boolean;
   /** Noun used in error messages, e.g. "Request" / "Runtime request". */
   label: string;
+  /** Per-request deadline, overriding {@link TransportConfig.timeoutMs}. */
+  timeoutMs?: number | undefined;
 }
 
 export interface TransportResult {
@@ -54,10 +56,12 @@ export class Transport {
    */
   async send(req: TransportRequest): Promise<TransportResult> {
     const maxAttempts = req.retryable ? this.cfg.retry.maxRetries + 1 : 1;
+    // Per-request override, falling back to the client-level default.
+    const timeoutMs = req.timeoutMs ?? this.cfg.timeoutMs;
 
     let attempt = 0;
     for (;;) {
-      const { signal, cleanup } = composeSignal(req.signal, this.cfg.timeoutMs);
+      const { signal, cleanup } = composeSignal(req.signal, timeoutMs);
 
       this.cfg.hooks?.onRequest?.({
         method: req.method,
@@ -94,7 +98,7 @@ export class Transport {
       // already sent headers must time out, not hang forever.
       let body: unknown;
       try {
-        body = parseBody(await raceWithTimeout(response, this.cfg.timeoutMs));
+        body = parseBody(await raceWithTimeout(response, timeoutMs));
       } catch (error) {
         void response.body?.cancel().catch(() => {});
         if (isCallerAbort(error, req.signal)) {
@@ -106,7 +110,7 @@ export class Transport {
           continue;
         }
         if (isAbortError(error)) {
-          throw new ConnectionError(`${req.label} timed out after ${this.cfg.timeoutMs}ms`, { cause: error });
+          throw new ConnectionError(`${req.label} timed out after ${timeoutMs}ms`, { cause: error });
         }
         throw new ConnectionError(`${req.label} failed`, { cause: error });
       }

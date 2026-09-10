@@ -11,7 +11,7 @@
  * connection via {@link ConnectionsClient.tokens} (see fluent Connector).
  */
 import type { HttpClient } from '../core/http';
-import { normalizePaginated, unwrapItem } from '../core/pagination';
+import { normalizePaginated, pageIterator, unwrapItem } from '../core/pagination';
 import { assertExternalId } from '../core/validate';
 import type { AppUser, Paginated, RequestOptions } from '../types';
 import { ConnectionsClient } from './connections';
@@ -47,32 +47,41 @@ export class AppUsersClient {
     assertExternalId(input.external_id);
     const body = await this.http.post<unknown>(this.base(), input, {
       idempotent: true,
-      signal: opts.signal, idempotencyKey: opts.idempotencyKey,
+      signal: opts.signal, idempotencyKey: opts.idempotencyKey, timeoutMs: opts.timeoutMs,
     });
     return unwrapItem<AppUser>(body);
   }
 
   async get(externalId: string, opts: RequestOptions = {}): Promise<AppUser> {
-    const body = await this.http.get<unknown>(this.userPath(externalId), { signal: opts.signal, idempotencyKey: opts.idempotencyKey });
+    const body = await this.http.get<unknown>(this.userPath(externalId), { signal: opts.signal, idempotencyKey: opts.idempotencyKey, timeoutMs: opts.timeoutMs });
     return unwrapItem<AppUser>(body);
   }
 
   async update(externalId: string, patch: UpdateAppUserInput, opts: RequestOptions = {}): Promise<AppUser> {
-    const body = await this.http.patch<unknown>(this.userPath(externalId), patch, { signal: opts.signal, idempotencyKey: opts.idempotencyKey });
+    const body = await this.http.patch<unknown>(this.userPath(externalId), patch, { signal: opts.signal, idempotencyKey: opts.idempotencyKey, timeoutMs: opts.timeoutMs });
     return unwrapItem<AppUser>(body);
   }
 
   async delete(externalId: string, opts: RequestOptions = {}): Promise<void> {
-    await this.http.delete<unknown>(this.userPath(externalId), { signal: opts.signal, idempotencyKey: opts.idempotencyKey });
+    await this.http.delete<unknown>(this.userPath(externalId), { signal: opts.signal, idempotencyKey: opts.idempotencyKey, timeoutMs: opts.timeoutMs });
   }
 
   /** List users (page-based, supports `?status=`). */
   async list(opts: { status?: string; page?: number } & RequestOptions = {}): Promise<Paginated<AppUser>> {
     const body = await this.http.get<unknown>(this.base(), {
       query: { status: opts.status, page: opts.page },
-      signal: opts.signal, idempotencyKey: opts.idempotencyKey,
+      signal: opts.signal, idempotencyKey: opts.idempotencyKey, timeoutMs: opts.timeoutMs,
     });
     return normalizePaginated<AppUser>(body);
+  }
+
+  /**
+   * Iterate every user across all pages (auto-follows `?page=`). Prefer over
+   * `list()` when you need the full set without manual page bookkeeping.
+   */
+  async *iterate(opts: { status?: string } & RequestOptions = {}): AsyncIterable<AppUser> {
+    const first = await this.list(opts);
+    yield* pageIterator(first, (page) => this.list({ ...opts, page }));
   }
 
   /** Scoped connections client for a specific user. */

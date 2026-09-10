@@ -10,7 +10,7 @@
  * and results as the Vinkius website.
  */
 import type { HttpClient } from '../core/http';
-import { normalizePaginated, unwrapItem } from '../core/pagination';
+import { normalizePaginated, pageIterator, unwrapItem } from '../core/pagination';
 import type { CatalogConnector, CatalogConnectorDetail, Paginated, RequestOptions } from '../types';
 
 interface MarketplaceSearchConnector {
@@ -56,15 +56,26 @@ export class CatalogClient {
   async list(opts: { page?: number } & RequestOptions = {}): Promise<Paginated<CatalogConnector>> {
     const body = await this.http.get<unknown>('/catalog/mcps', {
       query: { page: opts.page },
-      signal: opts.signal, idempotencyKey: opts.idempotencyKey,
+      signal: opts.signal, idempotencyKey: opts.idempotencyKey, timeoutMs: opts.timeoutMs,
     });
     return normalizePaginated<CatalogConnector>(body);
+  }
+
+  /**
+   * Iterate every catalog connector across all pages. Convenience over `list()`
+   * for callers that want the full catalog without manual page bookkeeping.
+   */
+  async *iterate(opts: { page?: number } & RequestOptions = {}): AsyncIterable<CatalogConnector> {
+    // Seed with the explicitly-requested page (default 1) if given, so a caller
+    // can resume from a known page; otherwise start at the first page.
+    const first = await this.list({ ...opts });
+    yield* pageIterator(first, (page) => this.list({ ...opts, page }));
   }
 
   /** Fetch a single connector by slug (or uuid), including its credential schema. */
   async get(slug: string, opts: RequestOptions = {}): Promise<CatalogConnectorDetail> {
     const body = await this.http.get<unknown>(`/catalog/mcps/${encodeURIComponent(slug)}`, {
-      signal: opts.signal, idempotencyKey: opts.idempotencyKey,
+      signal: opts.signal, idempotencyKey: opts.idempotencyKey, timeoutMs: opts.timeoutMs,
     });
     return unwrapItem<CatalogConnectorDetail>(body);
   }
@@ -73,7 +84,7 @@ export class CatalogClient {
   async search(query: string, opts: { page?: number } & RequestOptions = {}): Promise<CatalogConnector[]> {
     const body = await this.http.get<unknown>('/marketplace/search', {
       query: { q: query, page: opts.page ?? 1 },
-      signal: opts.signal, idempotencyKey: opts.idempotencyKey,
+      signal: opts.signal, idempotencyKey: opts.idempotencyKey, timeoutMs: opts.timeoutMs,
     });
     return normalizeMarketplaceSearch(body);
   }

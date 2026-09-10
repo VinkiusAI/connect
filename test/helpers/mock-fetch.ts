@@ -202,6 +202,8 @@ export function runtimeRoute(
       content: Array<{ type: string; text: string }>;
       isError: boolean;
     };
+    /** Simulated latency for tools/call (honors the request's abort signal). */
+    callDelayMs?: number;
   } = {},
 ): Route {
   return {
@@ -216,7 +218,10 @@ export function runtimeRoute(
         const result = handlers.call
           ? handlers.call(rpc)
           : { content: [{ type: 'text', text: 'done' }], isError: false };
-        return { body: { jsonrpc: '2.0', id: rpc.id, result } };
+        return {
+          body: { jsonrpc: '2.0', id: rpc.id, result },
+          ...(handlers.callDelayMs ? { delayMs: handlers.callDelayMs } : {}),
+        };
       }
       return { body: { jsonrpc: '2.0', id: rpc.id, error: { code: -32601, message: 'Method not found' } } };
     },

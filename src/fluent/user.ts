@@ -68,7 +68,9 @@ export class UserContext {
   async capabilities(opts: CapabilityQuery = {}): Promise<CapabilitySet> {
     const include = opts.include && opts.include.length > 0 ? new Set(opts.include) : undefined;
     const exclude = opts.exclude && opts.exclude.length > 0 ? new Set(opts.exclude) : undefined;
-    const reqOpts: RequestOptions = opts.signal ? { signal: opts.signal } : {};
+    const reqOpts: RequestOptions = {};
+    if (opts.signal) reqOpts.signal = opts.signal;
+    if (opts.timeoutMs !== undefined) reqOpts.timeoutMs = opts.timeoutMs;
 
     const summaries = await this.connectors(reqOpts);
     const targets = summaries.filter(
@@ -90,6 +92,8 @@ export class UserContext {
           : await this.connector(s.slug).capabilities(reqOpts);
       } catch (error) {
         firstError ??= error; // isolated failure — never sinks the batch
+        // Surface the partial failure to the caller if they asked to observe it.
+        opts.onConnectorError?.(s.slug, error);
         return null;
       }
     });

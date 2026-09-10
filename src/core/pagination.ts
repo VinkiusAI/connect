@@ -50,3 +50,26 @@ export function unwrapItem<T>(body: unknown): T {
   const raw = (body ?? {}) as { data?: T };
   return (raw.data ?? (body as T)) as T;
 }
+
+/**
+ * Walk every page of a page-based list, yielding each item in order. Starts from
+ * `first` (already fetched), then advances `meta.current_page` until `meta.last_page`
+ * is reached. `fetchPage` must fetch the given 1-based page number. A single-page
+ * response (no `meta`) is yielded exactly once.
+ */
+export async function* pageIterator<T>(
+  first: Paginated<T>,
+  fetchPage: (page: number) => Promise<Paginated<T>>,
+): AsyncGenerator<T> {
+  let current = first;
+  let page = current.meta?.current_page ?? 1;
+  const start = page;
+  for (;;) {
+    yield* current.data;
+    const lastPage = current.meta?.last_page ?? page;
+    if (page >= lastPage) return;
+    page += 1;
+    if (page === start) return; // defensive: a malformed page never advances
+    current = await fetchPage(page);
+  }
+}

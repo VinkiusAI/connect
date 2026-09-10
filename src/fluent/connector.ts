@@ -76,7 +76,7 @@ export class Connector {
   /** Capabilities exposed by this connector, listed directly from the runtime. */
   async capabilities(opts: RequestOptions = {}): Promise<CapabilitySet> {
     const { runtime, connectionId } = await this.resolveRuntime(opts);
-    return this.listCapabilities(runtime, connectionId, opts.signal);
+    return this.listCapabilities(runtime, connectionId, opts);
   }
 
   /**
@@ -86,15 +86,15 @@ export class Connector {
   async capabilitiesForConnection(connectionId: string, opts: RequestOptions = {}): Promise<CapabilitySet> {
     this.connectionId = connectionId;
     const { runtime } = await this.resolveRuntime(opts);
-    return this.listCapabilities(runtime, connectionId, opts.signal);
+    return this.listCapabilities(runtime, connectionId, opts);
   }
 
   private async listCapabilities(
     runtime: RuntimeClient,
     connectionId: string,
-    signal?: AbortSignal,
+    opts: RequestOptions,
   ): Promise<CapabilitySet> {
-    const raw = await runtime.listTools({ signal });
+    const raw = await runtime.listTools({ signal: opts.signal, timeoutMs: opts.timeoutMs });
     const executor = makeExecutor(runtime);
     return CapabilitySet.fromCapabilities(
       raw.map((data) =>

@@ -41,6 +41,8 @@ interface RuntimeCallOptions {
   signal?: AbortSignal | undefined;
   /** When set, retries the (otherwise non-idempotent) call safely. */
   idempotencyKey?: string | undefined;
+  /** Per-call deadline in ms, overriding the client-level `timeoutMs`. */
+  timeoutMs?: number | undefined;
 }
 
 interface JsonRpcEnvelope {
@@ -69,8 +71,8 @@ export class RuntimeClient {
   }
 
   /** List the tools this connection exposes. Free (un-metered) at the runtime. */
-  async listTools(opts: { signal?: AbortSignal } = {}): Promise<CapabilityData[]> {
-    const result = await this.rpc('tools/list', {}, { signal: opts.signal }, true);
+  async listTools(opts: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<CapabilityData[]> {
+    const result = await this.rpc('tools/list', {}, { signal: opts.signal, timeoutMs: opts.timeoutMs }, true);
     const tools = (result as { tools?: unknown }).tools;
     if (!Array.isArray(tools)) {
       throw new ProtocolError('Runtime tools/list returned no tools array.', { details: result });
@@ -109,6 +111,7 @@ export class RuntimeClient {
       signal: opts.signal,
       retryable,
       label: 'Runtime request',
+      timeoutMs: opts.timeoutMs,
     });
 
     if (result.status < 200 || result.status >= 300) {
@@ -177,7 +180,11 @@ function normalizeCallResult(result: unknown): CapabilityResult {
           text: typeof e['text'] === 'string' ? (e['text'] as string) : JSON.stringify(e),
         }))
     : [];
-  return { content, isError: r['isError'] === true };
+  const normalized: CapabilityResult = { content, isError: r['isError'] === true };
+  // The MCP data plane may return a parsed object alongside the textual content.
+  // Surface it verbatim when present — never parsed or transformed by the SDK.
+  if ('structuredContent' in r) normalized.structuredContent = r['structuredContent'];
+  return normalized;
 }
 
 /** Runtime transport errors are plain `{ error }` bodies (see runtime routes). */
