@@ -86,21 +86,22 @@ export class Transport {
           continue;
         }
         if (isAbortError(error)) {
-          throw new ConnectionError(`${req.label} timed out after ${this.cfg.timeoutMs}ms`, { cause: error });
+          throw new ConnectionError(`${req.label} timed out after ${timeoutMs}ms`, { cause: error });
         }
         throw new ConnectionError(`${req.label} failed`, { cause: error });
-      } finally {
-        cleanup();
       }
 
       const requestId = extractRequestId(response);
       // Read the body INSIDE the same timeout window: a stalled stream that has
-      // already sent headers must time out, not hang forever.
+      // already sent headers must time out, not hang forever. The composed
+      // signal stays live during the read so a caller abort still propagates —
+      // real fetch implementations tie the body stream to that signal.
       let body: unknown;
       try {
         body = parseBody(await raceWithTimeout(response, timeoutMs));
       } catch (error) {
         void response.body?.cancel().catch(() => {});
+        cleanup();
         if (isCallerAbort(error, req.signal)) {
           throw new ConnectionError(`${req.label} aborted by caller`, { cause: error });
         }
@@ -114,6 +115,7 @@ export class Transport {
         }
         throw new ConnectionError(`${req.label} failed`, { cause: error });
       }
+      cleanup();
 
       const retryAfterMs = parseRetryAfter(response.headers.get('retry-after'));
 

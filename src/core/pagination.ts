@@ -63,13 +63,11 @@ export async function* pageIterator<T>(
 ): AsyncGenerator<T> {
   let current = first;
   let page = current.meta?.current_page ?? 1;
-  const start = page;
   for (;;) {
     yield* current.data;
     const lastPage = current.meta?.last_page ?? page;
     if (page >= lastPage) return;
+    current = await fetchPage(page + 1);
     page += 1;
-    if (page === start) return; // defensive: a malformed page never advances
-    current = await fetchPage(page);
   }
 }

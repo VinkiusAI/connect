@@ -14,7 +14,7 @@
  */
 import type { Capability } from '../fluent/capability';
 import type { CapabilityResult, JSONSchema } from '../types';
-import { findCapability, normalizeParams } from './shared';
+import { findCapability, normalizeParams, validateToolName } from './shared';
 
 export interface GeminiFunctionDeclaration {
   name: string;
@@ -28,13 +28,29 @@ export interface GeminiFunctionCall {
   args?: Record<string, unknown>;
 }
 
+/**
+ * Gemini function names must start with a letter/underscore and contain only
+ * letters, numbers, and underscores (≤64 chars). HYPHENS ARE NOT ALLOWED — a
+ * connector slug like `google-calendar` would make Gemini reject every call,
+ * so this is validated up front instead of failing at call time.
+ */
+const GEMINI_NAME_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+const GEMINI_NAME_MAX = 64;
+
+export function validateGeminiFunctionName(name: string): void {
+  validateToolName(name, 'Gemini', GEMINI_NAME_RE, GEMINI_NAME_MAX);
+}
+
 /** Convert Vinkius capabilities to Gemini function declarations. */
 export function toGeminiTools(capabilities: readonly Capability[]): GeminiFunctionDeclaration[] {
-  return capabilities.map((capability) => ({
-    name: capability.name,
-    description: capability.description,
-    parameters: normalizeParams(capability.inputSchema),
-  }));
+  return capabilities.map((capability) => {
+    validateGeminiFunctionName(capability.name);
+    return {
+      name: capability.name,
+      description: capability.description,
+      parameters: normalizeParams(capability.inputSchema),
+    };
+  });
 }
 
 /** Execute the Vinkius capability named by a Gemini function call. */

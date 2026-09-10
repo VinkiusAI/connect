@@ -5,10 +5,9 @@
  * (that is OpenAI's own technical term for these). Zero-dependency: uses
  * structural types compatible with the OpenAI SDK — no import of `openai`.
  */
-import { ConfigError } from '../core/errors';
 import type { Capability } from '../fluent/capability';
 import type { CapabilityResult, JSONSchema } from '../types';
-import { findCapability, normalizeParams, parseArgs } from './shared';
+import { findCapability, normalizeParams, parseArgs, validateToolName } from './shared';
 
 export interface OpenAIFunctionTool {
   type: 'function';
@@ -27,20 +26,13 @@ export interface OpenAIToolCall {
 /**
  * OpenAI tool-function names must be 1–64 chars of `[a-zA-Z0-9_-]`. The SDK
  * namespaces capabilities as `connector__name`, which can violate this (too long,
- * or containing dots/spaces from a connector or capability name). Catch it up
- * front with a clear error rather than a cryptic OpenAI 400 at call time.
+ * or containing dots/spaces from a connector or capability name).
  */
 const OPENAI_NAME_RE = /^[a-zA-Z0-9_-]+$/;
 const OPENAI_NAME_MAX = 64;
 
 export function validateOpenAIFunctionName(name: string): void {
-  if (name.length === 0 || name.length > OPENAI_NAME_MAX || !OPENAI_NAME_RE.test(name)) {
-    throw new ConfigError(
-      `Capability "${name}" cannot be exposed as an OpenAI tool name: it must be 1–${OPENAI_NAME_MAX} ` +
-        `characters of [a-zA-Z0-9_-] (got ${name.length} char(s)). ` +
-        'Override VinkiusOptions.namespaceCapability to produce OpenAI-compatible names.',
-    );
-  }
+  validateToolName(name, 'OpenAI', OPENAI_NAME_RE, OPENAI_NAME_MAX);
 }
 
 /** Convert Vinkius capabilities to OpenAI chat-completions `tools`. */

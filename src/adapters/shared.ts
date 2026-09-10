@@ -1,5 +1,5 @@
 /** Shared helpers for framework adapters. */
-import { NotFoundError } from '../core/errors';
+import { ConfigError, NotFoundError } from '../core/errors';
 import type { Capability } from '../fluent/capability';
 import type { JSONSchema } from '../types';
 
@@ -25,4 +25,23 @@ export function findCapability(capabilities: readonly Capability[], name: string
   const capability = capabilities.find((candidate) => candidate.name === name || candidate.rawName === name);
   if (!capability) throw new NotFoundError(`Unknown capability: ${name}`);
   return capability;
+}
+
+/**
+ * Guard against tool names a platform would reject (length/charset), throwing a
+ * clear ConfigError up front instead of a cryptic platform 400 at call time.
+ */
+export function validateToolName(
+  name: string,
+  platform: string,
+  pattern: RegExp,
+  maxLength: number,
+): void {
+  if (name.length > maxLength || !pattern.test(name)) {
+    throw new ConfigError(
+      `Capability "${name}" cannot be exposed as a ${platform} tool name: it must be ` +
+        `${maxLength} char(s) or fewer and match ${String(pattern)} (got ${name.length} char(s)). ` +
+        'Override VinkiusOptions.namespaceCapability to produce platform-compatible names.',
+    );
+  }
 }
